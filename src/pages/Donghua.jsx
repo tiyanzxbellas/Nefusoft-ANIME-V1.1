@@ -261,7 +261,7 @@ export default function Donghua() {
   };
 
   const hasFetchedRef = useRef(false);
-  const localCache = getCachedData('nefusoft_donghua_home_cache_v3');
+  const localCache = getCachedData('nefusoft_donghua_home_cache_v4');
   const memoryCache = window.__NEFUSOFT_DONGHUA_CACHE__ || localCache;
 
   // Lists & State
@@ -450,7 +450,7 @@ export default function Donghua() {
           activeDay: nextActiveDay
         };
         window.__NEFUSOFT_DONGHUA_CACHE__ = compiled;
-        setCachedData('nefusoft_donghua_home_cache_v3', compiled);
+        setCachedData('nefusoft_donghua_home_cache_v4', compiled);
       } catch (e) {
         console.error('Failed to load Donghua Home data', e);
         setIsHomeLoading(false);
