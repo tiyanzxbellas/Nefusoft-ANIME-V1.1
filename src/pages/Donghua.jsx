@@ -26,6 +26,30 @@ const getProxyUrl = (url) => {
   return `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(abs)}`;
 };
 
+// Resizer poster.
+// Poster asli dari anichin.moe besarnya 60-500 KB (sampai 960x1280 px), padahal
+// di kartu cuma dipakai 120x180 px. Browser tetap harus decode resolusi penuh
+// (~4,9 MB bitmap per gambar), dan di halaman Donghua ada >100 kartu -> itu
+// penyebab utama scroll berat. wsrv.nl bikin versi kecil + webp: payload turun
+// ~90% dan beban decode ikut turun drastis.
+const wsrvUrl = (url, width) => {
+  const abs = absUrl(url);
+  if (!abs) return '';
+  if (!/^https?:/i.test(abs)) return abs;
+  return `https://wsrv.nl/?url=${encodeURIComponent(abs)}&w=${width}&output=webp&q=72&we`;
+};
+
+// Kalau resizer gagal (host down / rate limit), <img> balik ke proxy biasa.
+// data-fallback menjaga supaya tidak terjadi loop onError tanpa henti.
+const onImgError = (e) => {
+  const el = e.currentTarget;
+  if (!el || el.dataset.fallback === '1') return;
+  const raw = el.dataset.raw;
+  if (!raw) return;
+  el.dataset.fallback = '1';
+  el.src = getProxyUrl(raw);
+};
+
 const Shimmer = () => (
   <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent animate-[shimmer_1.5s_infinite] z-10" style={{ transform: 'skewX(-20deg)' }} />
 );
@@ -39,6 +63,93 @@ const CardSkeleton = () => (
     <div className="w-1/2 h-2.5 bg-[#16161a] rounded-sm relative overflow-hidden"><Shimmer /></div>
   </div>
 );
+
+const HeroBanner = React.memo(function HeroBanner({ slides, isLoading, onOpen }) {
+  const [idx, setIdx] = useState(0);
+  const total = Math.min(slides.length, 5);
+
+  // Rotasi banner dipindah ke dalam komponen ini. Sebelumnya interval 6 detik
+  // ada di komponen halaman -> setiap rotasi me-render ulang SEMUA kartu
+  // (>100 kartu) dan membuat scroll tersendat.
+  useEffect(() => {
+    if (total < 2) return undefined;
+    const t = setInterval(() => setIdx((i) => (i + 1) % total), 6000);
+    return () => clearInterval(t);
+  }, [total]);
+
+  if (isLoading) {
+    return (
+      <div className="w-full h-full bg-[#16161a] relative flex items-end p-6 md:p-12 gap-6">
+        <Shimmer />
+        <div className="w-24 md:w-36 aspect-[3/4.2] bg-white/5 rounded-lg shrink-0 overflow-hidden relative">
+          <Shimmer />
+        </div>
+        <div className="flex flex-col gap-2 flex-1">
+          <div className="w-24 h-4 bg-white/5 rounded-sm relative overflow-hidden"><Shimmer /></div>
+          <div className="w-1/2 h-8 bg-white/5 rounded-sm relative overflow-hidden"><Shimmer /></div>
+          <div className="w-2/3 h-4 bg-white/5 rounded-sm relative overflow-hidden"><Shimmer /></div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!slides.length) return null;
+  const slide = slides[idx] || {};
+
+  return (
+    <div className="w-full h-full relative animate-[fadeIn_0.5s_ease-out]">
+      {/* Latar: versi 60px saja lalu dibesarkan object-cover -> sudah buram
+          sendiri, jadi tidak perlu filter blur yang mahal tiap frame. */}
+      <img
+        src={wsrvUrl(slide.poster, 60) || getProxyUrl(slide.poster)}
+        data-raw={slide.poster}
+        onError={onImgError}
+        referrerPolicy="no-referrer"
+        className="w-full h-full object-cover opacity-40 scale-105"
+        fetchPriority="low"
+        decoding="async"
+        alt=""
+        aria-hidden="true"
+      />
+      <div className="absolute inset-0 bg-gradient-to-t from-[#0a0a0c] via-[#0a0a0c]/40 to-transparent"></div>
+      <div className="absolute bottom-6 left-6 md:bottom-12 md:left-12 flex items-end gap-4 md:gap-6 z-10 w-[calc(100%-48px)] md:w-[calc(100%-96px)] max-w-7xl mx-auto">
+        <img
+          src={wsrvUrl(slide.poster, 400) || getProxyUrl(slide.poster)}
+          data-raw={slide.poster}
+          onError={onImgError}
+          referrerPolicy="no-referrer"
+          className="w-20 md:w-36 aspect-[3/4.5] object-cover rounded-xl shadow-2xl border border-white/10 shrink-0"
+          fetchPriority="high"
+          decoding="async"
+          alt={slide.title}
+        />
+        <div className="flex flex-col text-left mb-1 md:mb-2 gap-1 md:gap-2 flex-1 min-w-0">
+          <div className="flex gap-2 items-center">
+            <span className="bg-[#F6CF80]/20 text-[#F6CF80] text-[9px] md:text-xs font-black uppercase px-2 py-0.5 rounded-full w-max border border-[#F6CF80]/30 tracking-wider">
+              Featured Donghua
+            </span>
+            {slide.status && (
+              <span className="bg-white/5 text-white/50 text-[9px] md:text-xs font-black uppercase px-2 py-0.5 rounded-full w-max border border-white/10 tracking-wider">
+                {slide.status}
+              </span>
+            )}
+          </div>
+          <h2 className="text-base md:text-3xl font-black text-white tracking-tight leading-tight line-clamp-2">
+            {slide.title}
+          </h2>
+          <div className="flex items-center gap-2 mt-1 md:mt-2">
+            <button
+              onClick={() => onOpen(slide)}
+              className="h-8 md:h-10 px-5 md:px-6 bg-[#F6CF80] hover:bg-[#ebd59b] text-black rounded-lg font-black tracking-wider text-[10px] md:text-xs flex items-center justify-center gap-1.5 transition-colors shadow-[0_4px_14px_rgba(246,207,128,0.3)] cursor-pointer"
+            >
+              <span className="leading-none">Tonton Sekarang</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
 
 const getCachedData = (key) => {
   try {
@@ -128,7 +239,7 @@ export default function Donghua() {
   };
 
   const hasFetchedRef = useRef(false);
-  const localCache = getCachedData('nefusoft_donghua_home_cache_v2');
+  const localCache = getCachedData('nefusoft_donghua_home_cache_v3');
   const memoryCache = window.__NEFUSOFT_DONGHUA_CACHE__ || localCache;
 
   // Lists & State
@@ -162,9 +273,6 @@ export default function Donghua() {
   const [watchData, setWatchData] = useState(null);
   const [isWatchLoading, setIsWatchLoading] = useState(false);
   const [selectedServer, setSelectedServer] = useState(null);
-
-  // Active banner carousel index for featured header
-  const [bannerIdx, setBannerIdx] = useState(0);
 
   // Fetch Home Data
   useEffect(() => {
@@ -266,7 +374,7 @@ export default function Donghua() {
         // Set states
         setPopular(popData.length > 0 ? popData : fallbackPopular);
         setOngoing(ongData);
-        setUpdates(updData);
+        setUpdates(updData.slice(0, 20));
         setGenres(genData);
         setCompleted(compData);
         setRating(fallbackPopular); // Use fallback popular for rating as rating is similar
@@ -310,7 +418,9 @@ export default function Donghua() {
         const compiled = {
           popular: popData.length > 0 ? popData : fallbackPopular,
           ongoing: ongData,
-          updates: updData,
+          // 47 kartu sekaligus bikin DOM + decode gambar meledak. 20 sudah
+          // lebih dari cukup untuk slider horizontal.
+          updates: updData.slice(0, 20),
           genres: genData,
           rating: fallbackPopular,
           completed: compData,
@@ -318,7 +428,7 @@ export default function Donghua() {
           activeDay: nextActiveDay
         };
         window.__NEFUSOFT_DONGHUA_CACHE__ = compiled;
-        setCachedData('nefusoft_donghua_home_cache_v2', compiled);
+        setCachedData('nefusoft_donghua_home_cache_v3', compiled);
       } catch (e) {
         console.error('Failed to load Donghua Home data', e);
         setIsHomeLoading(false);
@@ -327,15 +437,6 @@ export default function Donghua() {
 
     fetchHomeData();
   }, [view, retryTrigger]);
-
-  // Rotate Featured slide banners
-  useEffect(() => {
-    if (popular.length === 0) return;
-    const interval = setInterval(() => {
-      setBannerIdx(prev => (prev + 1) % Math.min(popular.length, 5));
-    }, 6000);
-    return () => clearInterval(interval);
-  }, [popular]);
 
   // Browse and Search API Fetcher
   const fetchBrowseResults = async (page = 1) => {
@@ -622,84 +723,17 @@ export default function Donghua() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0c] selection:bg-[#F6CF80] selection:text-black pb-24 text-white relative">
-      <style>{`
-        @keyframes shimmer { 0% { transform: translate3d(-100%, 0, 0); } 100% { transform: translate3d(200%, 0, 0); } }
-        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        .no-scrollbar::-webkit-scrollbar { display: none; }
-        .custom-scrollbar::-webkit-scrollbar { height: 4px; width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
-      `}</style>
 
       <Navbar />
 
       {/* HEADER HERO BANNER FOR HOME */}
       {view === 'home' && (
         <div className="relative w-full aspect-[16/10] md:aspect-video min-h-[250px] md:max-h-[480px] overflow-hidden bg-[#0f0f12]">
-          {isHomeLoading ? (
-            <div className="w-full h-full bg-[#16161a] relative flex items-end p-6 md:p-12 gap-6">
-              <Shimmer />
-              <div className="w-24 md:w-36 aspect-[3/4.2] bg-white/5 rounded-lg shrink-0 overflow-hidden relative">
-                <Shimmer />
-              </div>
-              <div className="flex flex-col gap-2 flex-1">
-                <div className="w-24 h-4 bg-white/5 rounded-sm relative overflow-hidden"><Shimmer /></div>
-                <div className="w-1/2 h-8 bg-white/5 rounded-sm relative overflow-hidden"><Shimmer /></div>
-                <div className="w-2/3 h-4 bg-white/5 rounded-sm relative overflow-hidden"><Shimmer /></div>
-              </div>
-            </div>
-          ) : (
-            popular.length > 0 && (() => {
-              const activeSlide = popular[bannerIdx] || {};
-              return (
-                <div className="w-full h-full relative animate-[fadeIn_0.5s_ease-out]">
-                  <img
-                    src={getProxyUrl(activeSlide.poster)}
-                    referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover opacity-40 blur-sm scale-105 transition-all duration-1000"
-                    fetchPriority="high"
-                    decoding="async"
-                    alt="Banner Background"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-[#0a0a0c] via-[#0a0a0c]/40 to-transparent"></div>
-                  <div className="absolute bottom-6 left-6 md:bottom-12 md:left-12 flex items-end gap-4 md:gap-6 z-10 w-[calc(100%-48px)] md:w-[calc(100%-96px)] max-w-7xl mx-auto">
-                    <img
-                      src={getProxyUrl(activeSlide.poster)}
-                      referrerPolicy="no-referrer"
-                      className="w-20 md:w-36 aspect-[3/4.5] object-cover rounded-xl shadow-2xl border border-white/10 shrink-0"
-                      fetchPriority="high"
-                      decoding="async"
-                      alt={activeSlide.title}
-                    />
-                    <div className="flex flex-col text-left mb-1 md:mb-2 gap-1 md:gap-2 flex-1 min-w-0">
-                      <div className="flex gap-2 items-center">
-                        <span className="bg-[#F6CF80]/20 text-[#F6CF80] text-[9px] md:text-xs font-black uppercase px-2 py-0.5 rounded-full w-max border border-[#F6CF80]/30 tracking-wider">
-                          Featured Donghua
-                        </span>
-                        {activeSlide.status && (
-                          <span className="bg-white/5 text-white/50 text-[9px] md:text-xs font-black uppercase px-2 py-0.5 rounded-full w-max border border-white/10 tracking-wider">
-                            {activeSlide.status}
-                          </span>
-                        )}
-                      </div>
-                      <h2 className="text-base md:text-3xl font-black text-white tracking-tight leading-tight line-clamp-2">
-                        {activeSlide.title}
-                      </h2>
-                      <div className="flex items-center gap-2 mt-1 md:mt-2">
-                        <button
-                          onClick={() => setDonghuaView('details', { slug: activeSlide.slug, url: activeSlide.anichinUrl })}
-                          className="h-8 md:h-10 px-5 md:px-6 bg-[#F6CF80] hover:bg-[#ebd59b] text-black rounded-lg font-black tracking-wider text-[10px] md:text-xs flex items-center justify-center gap-1.5 transition-all shadow-[0_4px_14px_rgba(246,207,128,0.3)] hover:scale-102 cursor-pointer"
-                        >
-                          <span className="leading-none">Tonton Sekarang</span>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()
-          )}
+          <HeroBanner
+            slides={popular}
+            isLoading={isHomeLoading}
+            onOpen={(slide) => setDonghuaView('details', { slug: slide.slug, url: slide.anichinUrl })}
+          />
         </div>
       )}
 
@@ -744,30 +778,32 @@ export default function Donghua() {
                   </div>
                   <div className="flex overflow-x-auto gap-3.5 pb-4 custom-scrollbar snap-x px-2">
                     {list.map((item, idx) => {
-                      const isPreloadImg = idx < 4;
+                      const isPreloadImg = idx < 2;
                       return (
                         <div
                           key={`${item.slug}-${idx}`}
                           onClick={() => setDonghuaView('details', { slug: item.slug, url: item.anichinUrl })}
-                          className="min-w-[120px] w-[120px] md:min-w-[145px] md:w-[145px] group cursor-pointer snap-start transition-all hover:-translate-y-1"
+                          className="min-w-[120px] w-[120px] md:min-w-[145px] md:w-[145px] group cursor-pointer snap-start"
                         >
-                          <div className="relative aspect-[3/4.5] overflow-hidden bg-[#16161a] rounded-xl border border-white/5 shadow-xl">
+                          <div className="relative aspect-[3/4.5] overflow-hidden bg-[#16161a] rounded-xl border border-white/5 shadow-xl group-hover:border-[#F6CF80]/40">
                             <img
-                              src={getProxyUrl(item.poster)}
+                              src={wsrvUrl(item.poster, 300) || getProxyUrl(item.poster)}
+                              data-raw={item.poster}
+                              onError={onImgError}
                               referrerPolicy="no-referrer"
                               loading={isPreloadImg ? "eager" : "lazy"}
                               fetchPriority={isPreloadImg ? "high" : "low"}
-                              decoding={isPreloadImg ? "sync" : "async"}
-                              className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
+                              decoding="async"
+                              className="w-full h-full object-cover"
                               alt={item.title}
                             />
                             {item.sub && (
-                              <div className="absolute top-2 left-2 bg-black/70 backdrop-blur-md text-[#F6CF80] text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 flex items-center gap-0.5">
+                              <div className="absolute top-2 left-2 bg-black/85 text-[#F6CF80] text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 flex items-center gap-0.5">
                                 🎬 {item.sub}
                               </div>
                             )}
                             {item.status && (
-                              <div className="absolute bottom-2 right-2 bg-black/70 backdrop-blur-md text-white text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 uppercase">
+                              <div className="absolute bottom-2 right-2 bg-black/85 text-white text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 uppercase">
                                 {item.status}
                               </div>
                             )}
@@ -873,17 +909,21 @@ export default function Donghua() {
                             <div
                               key={`${item.slug}-${idx}`}
                               onClick={() => setDonghuaView('details', { slug: item.slug, url: item.anichinUrl })}
-                              className="group cursor-pointer transition-all hover:-translate-y-1 flex flex-col"
+                              className="group cursor-pointer flex flex-col"
                             >
-                              <div className="relative aspect-[3/4.5] overflow-hidden bg-[#16161a] rounded-xl border border-white/5 shadow-lg">
+                              <div className="relative aspect-[3/4.5] overflow-hidden bg-[#16161a] rounded-xl border border-white/5 shadow-lg group-hover:border-[#F6CF80]/40">
                                 <img
-                                  src={getProxyUrl(item.poster)}
+                                  src={wsrvUrl(item.poster, 300) || getProxyUrl(item.poster)}
+                                  data-raw={item.poster}
+                                  onError={onImgError}
                                   referrerPolicy="no-referrer"
-                                  className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
+                                  loading="lazy"
+                                  decoding="async"
+                                  className="w-full h-full object-cover"
                                   alt={item.title}
                                 />
                                 {item.episode && (
-                                  <div className="absolute top-2 left-2 bg-black/70 backdrop-blur-md text-[#F6CF80] text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10">
+                                  <div className="absolute top-2 left-2 bg-black/85 text-[#F6CF80] text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10">
                                     Eps {item.episode}
                                   </div>
                                 )}
@@ -1034,27 +1074,31 @@ export default function Donghua() {
                   {[...Array(8)].map((_, i) => <CardSkeleton key={i} />)}
                 </div>
               ) : browseResults.length > 0 ? (
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 lazy-grid">
                   {browseResults.map((item, idx) => (
                     <div
                       key={`${item.slug}-${idx}`}
                       onClick={() => setDonghuaView('details', { slug: item.slug, url: item.anichinUrl })}
-                      className="group cursor-pointer transition-all hover:-translate-y-1 flex flex-col"
+                      className="group cursor-pointer flex flex-col"
                     >
-                      <div className="relative aspect-[3/4.5] overflow-hidden bg-[#16161a] rounded-xl border border-white/5 shadow-xl">
+                      <div className="relative aspect-[3/4.5] overflow-hidden bg-[#16161a] rounded-xl border border-white/5 shadow-xl group-hover:border-[#F6CF80]/40">
                         <img
-                          src={getProxyUrl(item.poster)}
+                          src={wsrvUrl(item.poster, 300) || getProxyUrl(item.poster)}
+                          data-raw={item.poster}
+                          onError={onImgError}
                           referrerPolicy="no-referrer"
-                          className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
+                          loading="lazy"
+                          decoding="async"
+                          className="w-full h-full object-cover"
                           alt={item.title}
                         />
                         {item.sub && (
-                          <div className="absolute top-2 left-2 bg-black/70 backdrop-blur-md text-[#F6CF80] text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 flex items-center gap-0.5">
+                          <div className="absolute top-2 left-2 bg-black/85 text-[#F6CF80] text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 flex items-center gap-0.5">
                             🎬 {item.sub}
                           </div>
                         )}
                         {item.status && (
-                          <div className="absolute bottom-2 right-2 bg-black/70 backdrop-blur-md text-white text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 uppercase">
+                          <div className="absolute bottom-2 right-2 bg-black/85 text-white text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 uppercase">
                             {item.status}
                           </div>
                         )}
@@ -1103,7 +1147,7 @@ export default function Donghua() {
           <div className="mb-4">
             <button
               onClick={() => setDonghuaView('home')}
-              className="bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl px-4 py-2.5 text-xs font-black text-[#F6CF80] transition-all cursor-pointer flex items-center gap-1.5 shadow-[0_4px_12px_rgba(0,0,0,0.2)] backdrop-blur-md hover:scale-102 active:scale-98"
+              className="bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl px-4 py-2.5 text-xs font-black text-[#F6CF80] transition-all cursor-pointer flex items-center gap-1.5 shadow-[0_4px_12px_rgba(0,0,0,0.2)] hover:scale-102 active:scale-98"
             >
               <svg className="w-4 h-4 text-[#F6CF80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" />
@@ -1130,8 +1174,13 @@ export default function Donghua() {
                 <div className="bg-[#16161a] border border-white/5 rounded-3xl p-6 md:p-8 flex flex-col md:flex-row gap-6 relative overflow-hidden shadow-2xl animate-[fadeIn_0.5s_ease-out]">
 
                   <img
-                    src={getProxyUrl(detailsData.poster)}
+                    src={wsrvUrl(detailsData.poster, 520) || getProxyUrl(detailsData.poster)}
+                    data-raw={detailsData.poster}
+                    onError={onImgError}
                     referrerPolicy="no-referrer"
+                    loading="eager"
+                    fetchPriority="high"
+                    decoding="async"
                     className="w-full md:w-52 aspect-[3/4.5] object-cover rounded-2xl border border-white/10 shrink-0 z-10 shadow-lg"
                     alt={detailsData.title}
                   />
@@ -1264,7 +1313,7 @@ export default function Donghua() {
               onClick={() => {
                 setDonghuaView('home');
               }}
-              className="bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl px-4 py-2.5 text-xs font-black text-[#F6CF80] transition-all cursor-pointer flex items-center gap-1.5 shadow-[0_4px_12px_rgba(0,0,0,0.2)] backdrop-blur-md hover:scale-102 active:scale-98"
+              className="bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl px-4 py-2.5 text-xs font-black text-[#F6CF80] transition-all cursor-pointer flex items-center gap-1.5 shadow-[0_4px_12px_rgba(0,0,0,0.2)] hover:scale-102 active:scale-98"
             >
               <svg className="w-4 h-4 text-[#F6CF80]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" />

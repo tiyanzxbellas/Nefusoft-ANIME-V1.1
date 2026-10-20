@@ -92,6 +92,27 @@ Nefusoft/
 └── package.json        # Informasi versi dan dependensi proyek
 ```
 
+## ⚡ Optimasi Performa (Halaman Donghua)
+
+Halaman Donghua menampilkan ratusan kartu poster sekaligus, sehingga di HP kelas
+bawah scroll-nya terasa berat. Empat penyebab utamanya sudah diperbaiki:
+
+| Masalah | Sebelum | Sesudah |
+|---|---|---|
+| Ukuran poster | poster asli 60–500 KB (sampai 960×1280 px) dipakai di slot 120×180 px | dikirim versi kecil `w=300 webp q=72` lewat `wsrv.nl` → **±90% lebih ringan** |
+| `backdrop-filter` | 2 badge blur di **setiap** kartu (±60 layer aktif saat scroll) | badge solid `bg-black/85`, tanpa blur |
+| Animasi | `transition-all` + `group-hover:scale-110` di tiap poster, hero pakai `blur-sm` penuh | tidak ada zoom/decode ulang; latar hero pakai gambar 60 px yang sudah buram alami |
+| Re-render | rotasi banner 6 detik me-render ulang seluruh halaman | rotasi pindah ke komponen `HeroBanner` (`React.memo`) |
+| Jumlah kartu | "Rilis Terbaru" 47 kartu | 20 kartu |
+
+Tambahan: semua gambar kartu kini `loading="lazy" decoding="async"` (hanya 2 poster
+pertama tiap baris yang `eager`), dan animasi `shimmer`/`fadeIn` dipindah dari
+`<style>` di komponen ke `style.css` supaya tidak dibuat ulang tiap render.
+
+Kalau `wsrv.nl` gagal (misalnya rate limit), setiap `<img>` otomatis kembali ke
+proxy Cloudflare (`cf.tiyanstores.workers.dev`) lewat handler `onError`, jadi
+poster tidak akan kosong.
+
 ## 🤝 Kontribusi (Contributing)
 
 Karena proyek ini bersifat *open-source*, kami sangat menyambut partisipasi dari komunitas! Jika Anda ingin memperbaiki bug, menambahkan fitur, atau memperbaiki UI, silakan ikuti langkah berikut:
