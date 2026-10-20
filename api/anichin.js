@@ -43,12 +43,15 @@ async function runCurl(url, ua) {
   });
 
   const buf = res.stdout;
-  const idx = buf.lastIndexOf(Buffer.from('\n__S__'));
+  const MK = Buffer.from('\n__S__');
+  const idx = buf.lastIndexOf(MK);
   const body = idx >= 0 ? buf.subarray(0, idx) : buf;
-  const meta = idx >= 0 ? buf.subarray(idx + 5).toString('latin1') : '';
+  const meta = idx >= 0 ? buf.subarray(idx + MK.length).toString('latin1') : '';
   const m = meta.match(/^(\d+)__CT__(.*)$/);
+  // kalau trailer tidak terbaca tapi bodynya HTML, anggap 200
+  const statusGuess = m ? parseInt(m[1], 10) : body.subarray(0, 200).toString('utf8').match(/<!DOCTYPE html|<html/i) ? 200 : 0;
   return {
-    status: m ? parseInt(m[1], 10) : 0,
+    status: statusGuess,
     ctype: (m && m[2]) || 'text/html; charset=utf-8',
     body,
     err: res.err ? String(res.err.message || res.err).slice(0, 200) : '',
