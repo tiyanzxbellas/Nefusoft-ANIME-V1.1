@@ -38,9 +38,11 @@ export default async function handler(req, res) {
   }
 
   let out = Buffer.alloc(0);
+  let errMsg = '';
+  let errStderr = '';
   try {
     const { execFile } = await import('node:child_process');
-    out = await new Promise((resolve) => {
+    const result = await new Promise((resolve) => {
       execFile('curl', [
         '-sS', '-L', '--max-time', '25', '--compressed',
         '--user-agent', ua,
@@ -48,15 +50,34 @@ export default async function handler(req, res) {
         '--accept-language', 'id-ID,id;q=0.9,en;q=0.8',
         '-w', '\n__CURL_STATUS__%{http_code}__CURL_CT__%{content_type}',
         '--', target,
-      ], { encoding: 'buffer', maxBuffer: MAX_BYTES, timeout: 28000 }, (err, stdout) => {
-        if (stdout && stdout.length) resolve(stdout);
-        else resolve(Buffer.alloc(0));
+      ], { encoding: 'buffer', maxBuffer: MAX_BYTES, timeout: 28000 }, (err, stdout, stderr) => {
+        resolve({ err, stdout, stderr });
       });
     });
+    out = result.stdout && result.stdout.length ? result.stdout : Buffer.alloc(0);
+    if (result.err) errMsg = String(result.err.message || result.err);
+    if (result.stderr && result.stderr.length) errStderr = result.stderr.toString('utf8').slice(0, 400);
   } catch (err) {
+    errMsg = String((err && err.message) || err);
+  }
+
+  const markerIdx = out.lastIndexOf(Buffer.from('\n__CURL_STATUS__'));
+  if (markerIdx < 0) {
+    // curl gagal total (biner hilang / DNS / timeout) -> balas diagnostik
     res.statusCode = 502;
-    res.setHeader('content-type', 'application/json');
-    return res.end(JSON.stringify({ ok: false, error: String((err && err.message) || err) }));
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.setHeader('cache-control', 'no-store');
+    res.setHeader('x-proxy-via', 'vercel-anichin-curl');
+    return res.end(
+      JSON.stringify({
+        ok: false,
+        target,
+        curl_error: errMsg || '(stdout kosong tanpa error)',
+        curl_stderr: errStderr,
+        bytes: out.length,
+        node: process.version,
+      })
+    );
   }
 
   // curl breathes -w di akhir; pisahkan body dari trailer __CURL_STATUS__
