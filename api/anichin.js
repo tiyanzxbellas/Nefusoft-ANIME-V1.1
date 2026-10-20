@@ -46,8 +46,8 @@ export default async function handler(req, res) {
       execFile('curl', [
         '-sS', '-L', '--max-time', '25', '--compressed',
         '--user-agent', ua,
-        '--accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        '--accept-language', 'id-ID,id;q=0.9,en;q=0.8',
+        '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        '-H', 'Accept-Language: id-ID,id;q=0.9,en;q=0.8',
         '-w', '\n__CURL_STATUS__%{http_code}__CURL_CT__%{content_type}',
         '--', target,
       ], { encoding: 'buffer', maxBuffer: MAX_BYTES, timeout: 28000 }, (err, stdout, stderr) => {
