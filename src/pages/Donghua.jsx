@@ -3,16 +3,27 @@ import { useSearchParams } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
 
-const API_BASE = 'https://anichin.cafe';
+// Anichin rotated its domain: anichin.cafe is dead (NXDOMAIN, delegation dropped).
+// Main site is anichin.moe (anichin.care is only the official landing page).
+const API_BASE = 'https://anichin.moe';
+
+// Anichin serves relative paths (/wp-content/..., /slug/) -> make them absolute
+// so the CORS proxy gets a full URL.
+const absUrl = (url) => {
+  if (!url) return '';
+  if (/^(https?:)?\/\//i.test(url) || url.startsWith('data:') || url.startsWith('blob:')) return url;
+  return `${API_BASE}${url.startsWith('/') ? '' : '/'}${url}`;
+};
 
 const getApiUrl = (url) => {
   return `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(url)}`;
 };
 
 const getProxyUrl = (url) => {
-  if (!url) return '';
+  const abs = absUrl(url);
+  if (!abs) return '';
   // Force external images/assets to go through the proxy to bypass 403 / CORS
-  return `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(url)}`;
+  return `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(abs)}`;
 };
 
 const Shimmer = () => (
@@ -60,7 +71,8 @@ const parseBsxCards = (container) => {
     const href = a.getAttribute('href') || '';
     const title = a.getAttribute('title') || el.querySelector('.tt')?.textContent?.trim() || '';
     const img = el.querySelector('img');
-    const poster = img?.getAttribute('src') || img?.getAttribute('data-lazy-src') || img?.getAttribute('data-src') || '';
+    const rawPoster = img?.getAttribute('src') || img?.getAttribute('data-lazy-src') || img?.getAttribute('data-src') || '';
+    const poster = absUrl(rawPoster);
     const sub = el.querySelector('.sb')?.textContent?.trim() || '';
     const status = el.querySelector('.epx')?.textContent?.trim() || '';
 
@@ -116,7 +128,7 @@ export default function Donghua() {
   };
 
   const hasFetchedRef = useRef(false);
-  const localCache = getCachedData('nefusoft_donghua_home_cache');
+  const localCache = getCachedData('nefusoft_donghua_home_cache_v2');
   const memoryCache = window.__NEFUSOFT_DONGHUA_CACHE__ || localCache;
 
   // Lists & State
@@ -189,7 +201,7 @@ export default function Donghua() {
           if (backdropEl) {
             const style = backdropEl.getAttribute('style') || '';
             const match = style.match(/url\(['\"]?([^'\"]+)['\"]?\)/);
-            if (match) poster = match[1];
+            if (match) poster = absUrl(match[1]);
           }
           const a = el.querySelector('h2 a');
           const title = a?.textContent?.trim() || '';
@@ -206,7 +218,11 @@ export default function Donghua() {
         });
 
         // If swiper slide is empty, fallback to Popular Today section
-        const popularTodayBox = findBixboxByHeader(homeDoc, 'Popular Today') || findBixboxByHeader(homeDoc, 'Popular Series');
+        const popularTodayBox =
+          findBixboxByHeader(homeDoc, 'Popular Today') ||
+          findBixboxByHeader(homeDoc, 'Popular Series') ||
+          findBixboxByHeader(homeDoc, 'Terpopuler') ||
+          findBixboxByHeader(homeDoc, 'Popular');
         const fallbackPopular = parseBsxCards(popularTodayBox);
 
         // Latest Updates
@@ -215,13 +231,25 @@ export default function Donghua() {
 
         // Genres list
         const genData = [];
-        const genreUl = homeDoc.querySelector('ul.genre');
+        const genreUl = homeDoc.querySelector('ul.genre, .genre, ul.taxlist');
         if (genreUl) {
           genreUl.querySelectorAll('li a').forEach(a => {
             genData.push({
               name: a.textContent.trim(),
               slug: extractSlugFromUrl(a.getAttribute('href'))
             });
+          });
+        }
+        // New Anichin layout has no genre <ul> on the homepage: harvest genre
+        // links from the series cards instead so the genre filter still works.
+        if (genData.length === 0) {
+          const seen = new Set();
+          homeDoc.querySelectorAll('a[href*="/genres/"]').forEach(a => {
+            const name = a.textContent?.trim() || '';
+            const slug = extractSlugFromUrl(a.getAttribute('href') || '');
+            if (!name || !slug || seen.has(slug)) return;
+            seen.add(slug);
+            genData.push({ name, slug });
           });
         }
 
@@ -290,7 +318,7 @@ export default function Donghua() {
           activeDay: nextActiveDay
         };
         window.__NEFUSOFT_DONGHUA_CACHE__ = compiled;
-        setCachedData('nefusoft_donghua_home_cache', compiled);
+        setCachedData('nefusoft_donghua_home_cache_v2', compiled);
       } catch (e) {
         console.error('Failed to load Donghua Home data', e);
         setIsHomeLoading(false);
@@ -372,7 +400,7 @@ export default function Donghua() {
 
           const title = doc.querySelector('h1.entry-title')?.textContent?.trim() || doc.querySelector('h1')?.textContent?.trim() || '';
           const alt_title = doc.querySelector('.alter')?.textContent?.trim() || '';
-          const poster = doc.querySelector('.thumb img')?.getAttribute('src') || '';
+          const poster = absUrl(doc.querySelector('.thumb img')?.getAttribute('src') || '');
           const synopsis = doc.querySelector('.entry-content[itemprop="description"]')?.innerHTML?.trim() || doc.querySelector('.entry-content')?.innerHTML?.trim() || '';
 
           const info = {};
