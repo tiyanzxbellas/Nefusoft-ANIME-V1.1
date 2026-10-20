@@ -10,8 +10,43 @@ const getApiUrl = (url) => {
   return `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(url)}`;
 };
 
-// Helper to secure referrer policy / image proxy
+// Helper to secure referrer policy / image proxy (worker = fallback terakhir)
 const getMangaImg = (url) => mediaUrl(url);
+
+// Poster versi kecil.
+// Kartu cuma butuh 120-180 px, tapi halaman detail memakai cover ASLI (PNG
+// sampai 230 KB) dan kartu komikindo mengirim thumb ~22 KB per gambar.
+// wsrv.nl mengubahnya jadi webp kecil: cover 230 KB -> 27 KB, thumb -> 15 KB.
+// Bonus: wsrv.nl tidak kena blokir DNS operator (workers.dev diblokir XL).
+const wsrvImg = (url, width) => {
+  if (!url) return '';
+  if (!/^https?:/i.test(url)) return url;
+  return `https://wsrv.nl/?url=${encodeURIComponent(url)}&w=${width}&output=webp&q=72&we`;
+};
+
+// Kalau resizer gagal, <img> balik ke proxy worker (sekali saja, anti-loop).
+const onImgError = (e) => {
+  const el = e.currentTarget;
+  if (!el || el.dataset.fallback === '1') return;
+  const raw = el.dataset.raw;
+  if (!raw) return;
+  el.dataset.fallback = '1';
+  el.src = getMangaImg(raw);
+};
+
+// API komikindo mengirim header CORS sendiri, jadi bisa di-fetch LANGSUNG
+// tanpa proxy. Proxy worker hanya dipakai kalau direct gagal (dev/CORS/
+// jaringan yang memblokir). Ini melepas ketergantungan penuh ke
+// *.workers.dev yang diblokir DNS sebagian operator (mis. XL Axiata).
+const mangaFetch = async (url) => {
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (e) {
+    return fetch(getApiUrl(url)).then((r) => r.json());
+  }
+};
 
 // Component for rendering chapter pages with multi-source fallback
 const ChapterImage = ({ imgUrl, pageNum }) => {
@@ -123,6 +158,71 @@ const setCachedData = (key, data) => {
   } catch (e) {}
 };
 
+// Banner hero dipisah jadi komponen memo dengan state rotasi internal.
+// Dulu rotasi 5 detik memanggil setBannerIdx di komponen halaman -> SELURUH
+// halaman (9 slider + grid) ikut di-render ulang tiap 5 detik.
+const HeroBanner = React.memo(({ banners, onOpen }) => {
+  const total = Array.isArray(banners) ? banners.length : 0;
+  const [idx, setIdx] = useState(0);
+
+  useEffect(() => {
+    if (total <= 1) return;
+    const t = setInterval(() => setIdx((p) => (p + 1) % total), 6000);
+    return () => clearInterval(t);
+  }, [total]);
+
+  if (total === 0) return null;
+  const activeBanner = banners[idx] || {};
+
+  return (
+    <div className="w-full h-full relative">
+      {/* latar: cukup gambar 60 px (di-blur oleh overlay gradien) */}
+      <img
+        src={wsrvImg(activeBanner.coverImage, 60) || getMangaImg(activeBanner.coverImage)}
+        data-raw={activeBanner.coverImage || ''}
+        onError={onImgError}
+        referrerPolicy="no-referrer"
+        className="w-full h-full object-cover opacity-50"
+        fetchPriority="high"
+        decoding="async"
+        alt="Banner Background"
+      />
+      <div className="absolute inset-0 bg-gradient-to-t from-[#0a0a0c] via-[#0a0a0c]/40 to-transparent"></div>
+      <div className="absolute bottom-6 left-6 md:bottom-12 md:left-12 flex items-end gap-4 md:gap-6 z-10 w-[calc(100%-48px)] md:w-[calc(100%-96px)] max-w-7xl mx-auto">
+        <img
+          src={wsrvImg(activeBanner.coverImage, 320) || getMangaImg(activeBanner.coverImage)}
+          data-raw={activeBanner.coverImage || ''}
+          onError={onImgError}
+          referrerPolicy="no-referrer"
+          className="w-20 md:w-36 aspect-[3/4.5] object-cover rounded-xl shadow-2xl border border-white/10 shrink-0"
+          fetchPriority="high"
+          decoding="async"
+          alt={activeBanner.title}
+        />
+        <div className="flex flex-col text-left mb-1 md:mb-2 gap-1 md:gap-2 flex-1 min-w-0">
+          <span className="bg-[#F6CF80]/20 text-[#F6CF80] text-[9px] md:text-xs font-black uppercase px-2 py-0.5 rounded-full w-max border border-[#F6CF80]/30 tracking-wider">
+            {activeBanner.format || 'Manga'}
+          </span>
+          <h2 className="text-base md:text-3xl font-black text-white tracking-tight leading-tight line-clamp-2">
+            {activeBanner.title}
+          </h2>
+          <p className="text-[10px] md:text-xs text-white/50 line-clamp-2 max-w-2xl leading-relaxed">
+            Manga terpopuler dengan {activeBanner.views || 'banyak'} pembaca setia di NefuManga! {activeBanner.chapter ? `Update terbaru: Chapter ${activeBanner.chapter}` : ''}
+          </p>
+          <div className="flex items-center gap-2 mt-1 md:mt-2">
+            <button
+              onClick={() => onOpen(activeBanner.slug)}
+              className="h-8 md:h-10 px-5 md:px-6 bg-[#F6CF80] hover:bg-[#ebd59b] text-black rounded-lg font-black tracking-wider text-[10px] md:text-xs flex items-center justify-center gap-1.5 transition-colors shadow-[0_4px_14px_rgba(246,207,128,0.3)] cursor-pointer"
+            >
+              <span className="leading-none">Baca Sekarang</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 export default function Manga() {
   const [searchParams, setSearchParams] = useSearchParams();
   const view = searchParams.get('view') || 'home';
@@ -151,7 +251,7 @@ export default function Manga() {
   };
 
   const hasFetchedRef = useRef(false);
-  const localCache = getCachedData('nefusoft_manga_home_cache');
+  const localCache = getCachedData('nefusoft_manga_home_cache_v2');
   const memoryCache = window.__NEFUSOFT_MANGA_CACHE__ || localCache;
 
   // Cache & Lists
@@ -192,9 +292,6 @@ export default function Manga() {
   const [readerData, setReaderData] = useState(null);
   const [isReaderLoading, setIsReaderLoading] = useState(false);
 
-  // Active banner carousel index
-  const [bannerIdx, setBannerIdx] = useState(0);
-
   // Fetch Home Data
   useEffect(() => {
     if (view !== 'home') return;
@@ -214,16 +311,16 @@ export default function Manga() {
           rekomendasi1, rekomendasi2, terpopuler1, terpopuler2, latestRes,
           colorizedColored, colorizedBW, manhwaRes, manhuaRes, mangaRes
         ] = await Promise.all([
-          fetch(getApiUrl(`${API_BASE}/v2/rekomendasi/1`)).then(r => r.json()).catch(() => []),
-          fetch(getApiUrl(`${API_BASE}/v2/rekomendasi/2`)).then(r => r.json()).catch(() => []),
-          fetch(getApiUrl(`${API_BASE}/v2/terpopuler/1`)).then(r => r.json()).catch(() => []),
-          fetch(getApiUrl(`${API_BASE}/v2/terpopuler/2`)).then(r => r.json()).catch(() => []),
-          fetch(getApiUrl(`${API_BASE}/v2/latest/1`)).then(r => r.json()).catch(() => []),
-          fetch(getApiUrl(`${API_BASE}/v2/colorized/1/1`)).then(r => r.json()).catch(() => []),
-          fetch(getApiUrl(`${API_BASE}/v2/colorized/0/1`)).then(r => r.json()).catch(() => []),
-          fetch(getApiUrl(`${API_BASE}/v2/type/Manhwa/1`)).then(r => r.json()).catch(() => []),
-          fetch(getApiUrl(`${API_BASE}/v2/type/Manhua/1`)).then(r => r.json()).catch(() => []),
-          fetch(getApiUrl(`${API_BASE}/v2/type/Manga/1`)).then(r => r.json()).catch(() => [])
+          mangaFetch(`${API_BASE}/v2/rekomendasi/1`).catch(() => []),
+          mangaFetch(`${API_BASE}/v2/rekomendasi/2`).catch(() => []),
+          mangaFetch(`${API_BASE}/v2/terpopuler/1`).catch(() => []),
+          mangaFetch(`${API_BASE}/v2/terpopuler/2`).catch(() => []),
+          mangaFetch(`${API_BASE}/v2/latest/1`).catch(() => []),
+          mangaFetch(`${API_BASE}/v2/colorized/1/1`).catch(() => []),
+          mangaFetch(`${API_BASE}/v2/colorized/0/1`).catch(() => []),
+          mangaFetch(`${API_BASE}/v2/type/Manhwa/1`).catch(() => []),
+          mangaFetch(`${API_BASE}/v2/type/Manhua/1`).catch(() => []),
+          mangaFetch(`${API_BASE}/v2/type/Manga/1`).catch(() => [])
         ]);
 
         const mapMangaItem = (item) => ({
@@ -276,7 +373,7 @@ export default function Manga() {
           topAnime: recData
         };
         window.__NEFUSOFT_MANGA_CACHE__ = compiled;
-        setCachedData('nefusoft_manga_home_cache', compiled);
+        setCachedData('nefusoft_manga_home_cache_v2', compiled);
       } catch (e) {
         console.error('Failed to load Manga Home data', e);
       } finally {
@@ -286,15 +383,6 @@ export default function Manga() {
 
     fetchHomeData();
   }, [view, retryTrigger]);
-
-  // Banner rotation logic
-  useEffect(() => {
-    if (banners.length === 0) return;
-    const interval = setInterval(() => {
-      setBannerIdx(prev => (prev + 1) % banners.length);
-    }, 5000);
-    return () => clearInterval(interval);
-  }, [banners]);
 
   // Browse and Search API Fetcher
   const fetchBrowseResults = async (page = 1, append = false) => {
@@ -319,7 +407,7 @@ export default function Manga() {
         endpoint = `${API_BASE}/v2/latest/${page}`;
       }
 
-      const res = await fetch(getApiUrl(endpoint)).then(r => r.json());
+      const res = await mangaFetch(endpoint);
       const rawList = Array.isArray(res) ? res : [];
 
       const mappedResults = rawList.map(item => ({
@@ -368,7 +456,7 @@ export default function Manga() {
         setChaptersData([]);
         setChapterSearch('');
         try {
-          const detailRes = await fetch(getApiUrl(`${API_BASE}/v2/manga/${activeSlug}`)).then(r => r.json()).catch(() => null);
+          const detailRes = await mangaFetch(`${API_BASE}/v2/manga/${activeSlug}`).catch(() => null);
           const rawDetail = Array.isArray(detailRes) && detailRes.length > 0 ? detailRes[0] : null;
 
           if (rawDetail) {
@@ -409,7 +497,7 @@ export default function Manga() {
         setIsReaderLoading(true);
         setReaderData(null);
         try {
-          const res = await fetch(getApiUrl(`${API_BASE}/v2/chapter/${activeChapterIndex}`)).then(r => r.json());
+          const res = await mangaFetch(`${API_BASE}/v2/chapter/${activeChapterIndex}`);
           setReaderData(res || null);
           window.scrollTo(0, 0);
         } catch (e) {
@@ -447,16 +535,6 @@ export default function Manga() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0c] selection:bg-[#F6CF80] selection:text-black pb-24 text-white relative">
-      <style>{`
-        @keyframes shimmer { 0% { transform: translate3d(-100%, 0, 0); } 100% { transform: translate3d(200%, 0, 0); } }
-        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-        .no-scrollbar::-webkit-scrollbar { display: none; }
-        .custom-scrollbar::-webkit-scrollbar { height: 4px; width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
-      `}</style>
-
       <Navbar />
 
       {/* HEADER BANNER OR VIEW HERO */}
@@ -475,51 +553,7 @@ export default function Manga() {
               </div>
             </div>
           ) : (
-            banners.length > 0 && (() => {
-              const activeBanner = banners[bannerIdx] || {};
-              return (
-                <div className="w-full h-full relative">
-                  <img
-                    src={getMangaImg(activeBanner.coverImage)}
-                    referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover opacity-50 transition-all duration-1000"
-                    fetchPriority="high"
-                    decoding="async"
-                    alt="Banner Background"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-[#0a0a0c] via-[#0a0a0c]/40 to-transparent"></div>
-                  <div className="absolute bottom-6 left-6 md:bottom-12 md:left-12 flex items-end gap-4 md:gap-6 z-10 w-[calc(100%-48px)] md:w-[calc(100%-96px)] max-w-7xl mx-auto">
-                    <img
-                      src={getMangaImg(activeBanner.coverImage)}
-                      referrerPolicy="no-referrer"
-                      className="w-20 md:w-36 aspect-[3/4.5] object-cover rounded-xl shadow-2xl border border-white/10 shrink-0"
-                      fetchPriority="high"
-                      decoding="async"
-                      alt={activeBanner.title}
-                    />
-                    <div className="flex flex-col text-left mb-1 md:mb-2 gap-1 md:gap-2 flex-1 min-w-0">
-                      <span className="bg-[#F6CF80]/20 text-[#F6CF80] text-[9px] md:text-xs font-black uppercase px-2 py-0.5 rounded-full w-max border border-[#F6CF80]/30 tracking-wider">
-                        {activeBanner.format || 'Manga'}
-                      </span>
-                      <h2 className="text-base md:text-3xl font-black text-white tracking-tight leading-tight line-clamp-2">
-                        {activeBanner.title}
-                      </h2>
-                      <p className="text-[10px] md:text-xs text-white/50 line-clamp-2 max-w-2xl leading-relaxed">
-                        Manga terpopuler dengan {activeBanner.views || 'banyak'} pembaca setia di NefuManga! {activeBanner.chapter ? `Update terbaru: Chapter ${activeBanner.chapter}` : ''}
-                      </p>
-                      <div className="flex items-center gap-2 mt-1 md:mt-2">
-                        <button
-                          onClick={() => setMangaView('details', { slug: activeBanner.slug })}
-                          className="h-8 md:h-10 px-5 md:px-6 bg-[#F6CF80] hover:bg-[#ebd59b] text-black rounded-lg font-black tracking-wider text-[10px] md:text-xs flex items-center justify-center gap-1.5 transition-all shadow-[0_4px_14px_rgba(246,207,128,0.3)] hover:scale-102 cursor-pointer"
-                        >
-                          <span className="leading-none">Baca Sekarang</span>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })()
+            <HeroBanner banners={banners} onOpen={(slug) => setMangaView('details', { slug })} />
           )}
         </div>
       )}
@@ -569,22 +603,24 @@ export default function Manga() {
                         <div
                           key={`${finalSlug}-${idx}`}
                           onClick={() => setMangaView('details', { slug: finalSlug })}
-                          className="min-w-[120px] w-[120px] md:min-w-[145px] md:w-[145px] group cursor-pointer snap-start transition-all hover:-translate-y-1"
+                          className="min-w-[120px] w-[120px] md:min-w-[145px] md:w-[145px] group cursor-pointer snap-start hover:-translate-y-1"
                         >
                           <div className="relative aspect-[3/4.5] overflow-hidden bg-[#16161a] rounded-xl border border-white/5 shadow-xl">
                             <img
-                              src={getMangaImg(finalCover)}
+                              src={wsrvImg(finalCover, 300) || getMangaImg(finalCover)}
+                              data-raw={finalCover || ''}
+                              onError={onImgError}
                               referrerPolicy="no-referrer"
                               loading={isPreloadImg ? "eager" : "lazy"}
                               fetchPriority={isPreloadImg ? "high" : "low"}
                               decoding={isPreloadImg ? "sync" : "async"}
-                              className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
+                              className="w-full h-full object-cover"
                               alt={finalTitle}
                             />
-                            <div className="absolute top-2 left-2 bg-black/70 backdrop-blur-md text-[#F6CF80] text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 flex items-center gap-0.5">
+                            <div className="absolute top-2 left-2 bg-black/85 text-[#F6CF80] text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 flex items-center gap-0.5">
                               ⭐ {finalRating}
                             </div>
-                            <div className="absolute bottom-2 right-2 bg-black/70 backdrop-blur-md text-white text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 uppercase">
+                            <div className="absolute bottom-2 right-2 bg-black/85 text-white text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 uppercase">
                               {finalFormat}
                             </div>
                           </div>
@@ -786,7 +822,7 @@ export default function Manga() {
                   {[...Array(8)].map((_, i) => <CardSkeleton key={i} />)}
                 </div>
               ) : browseResults.length > 0 ? (
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4 lazy-grid">
                   {browseResults.map((manga, idx) => {
                     const finalTitle = manga.title || '';
                     const finalCover = manga.coverImage || '';
@@ -797,19 +833,23 @@ export default function Manga() {
                       <div
                         key={`${finalSlug}-${idx}`}
                         onClick={() => setMangaView('details', { slug: finalSlug })}
-                        className="group cursor-pointer transition-all hover:-translate-y-1 flex flex-col"
+                        className="group cursor-pointer hover:-translate-y-1 flex flex-col"
                       >
                         <div className="relative aspect-[3/4.5] overflow-hidden bg-[#16161a] rounded-xl border border-white/5 shadow-xl">
                           <img
-                            src={getMangaImg(finalCover)}
+                            src={wsrvImg(finalCover, 300) || getMangaImg(finalCover)}
+                            data-raw={finalCover || ''}
+                            onError={onImgError}
                             referrerPolicy="no-referrer"
-                            className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500"
+                            loading="lazy"
+                            decoding="async"
+                            className="w-full h-full object-cover"
                             alt={finalTitle}
                           />
-                          <div className="absolute top-2 left-2 bg-black/70 backdrop-blur-md text-[#F6CF80] text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 flex items-center gap-0.5">
+                          <div className="absolute top-2 left-2 bg-black/85 text-[#F6CF80] text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 flex items-center gap-0.5">
                             ⭐ {finalRating}
                           </div>
-                          <div className="absolute bottom-2 right-2 bg-black/70 backdrop-blur-md text-white text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 uppercase">
+                          <div className="absolute bottom-2 right-2 bg-black/85 text-white text-[8px] font-black px-1.5 py-0.5 rounded border border-white/10 uppercase">
                             {finalFormat}
                           </div>
                         </div>
@@ -874,13 +914,24 @@ export default function Manga() {
 
                   {finalDetails.backgroundImage && (
                     <div className="absolute inset-0 opacity-5 blur-2xl pointer-events-none z-0">
-                      <img src={getMangaImg(finalDetails.backgroundImage)} className="w-full h-full object-cover" alt="backdrop" />
+                      <img
+                        src={wsrvImg(finalDetails.backgroundImage, 60) || getMangaImg(finalDetails.backgroundImage)}
+                        data-raw={finalDetails.backgroundImage || ''}
+                        onError={onImgError}
+                        loading="lazy"
+                        decoding="async"
+                        className="w-full h-full object-cover"
+                        alt="backdrop"
+                      />
                     </div>
                   )}
 
                   <img
-                    src={getMangaImg(finalDetails.coverImage)}
+                    src={wsrvImg(finalDetails.coverImage, 400) || getMangaImg(finalDetails.coverImage)}
+                    data-raw={finalDetails.coverImage || ''}
+                    onError={onImgError}
                     referrerPolicy="no-referrer"
+                    decoding="async"
                     className="w-full md:w-52 aspect-[3/4.5] object-cover rounded-2xl border border-white/10 shrink-0 z-10 shadow-lg"
                     alt={finalDetails.title}
                   />
@@ -1001,7 +1052,7 @@ export default function Manga() {
         <div className="max-w-2xl mx-auto px-4 mt-6">
 
           {/* Reader Top Bar Controls */}
-          <div className="flex flex-col gap-2 bg-[#16161a] border border-white/5 rounded-2xl p-3 mb-6 shadow-xl sticky top-20 z-50 backdrop-blur-xl">
+          <div className="flex flex-col gap-2 bg-[#16161a] border border-white/5 rounded-2xl p-3 mb-6 shadow-xl sticky top-20 z-50">
             <div className="flex justify-between items-center gap-2">
               <div className="text-center min-w-0 flex-1">
                 <span className="text-[#F6CF80] font-black text-sm block truncate">
@@ -1049,7 +1100,7 @@ export default function Manga() {
 
           {/* Bottom Chapter Navigation Controls */}
           {!isReaderLoading && readerData && readerData.image && (
-            <div className="flex justify-between items-center gap-4 bg-[#16161a] border border-white/5 rounded-2xl p-4 mt-6 mb-10 shadow-xl backdrop-blur-xl">
+            <div className="flex justify-between items-center gap-4 bg-[#16161a] border border-white/5 rounded-2xl p-4 mt-6 mb-10 shadow-xl">
               <button
                 onClick={() => navigateChapter('prev')}
                 className="bg-white/5 hover:bg-white/10 border border-white/5 rounded-xl px-4 py-2.5 text-xs font-black transition-all cursor-pointer flex items-center gap-1.5 flex-1 justify-center"

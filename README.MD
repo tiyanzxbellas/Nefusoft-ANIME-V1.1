@@ -92,7 +92,7 @@ Nefusoft/
 └── package.json        # Informasi versi dan dependensi proyek
 ```
 
-## ⚡ Optimasi Performa (Halaman Donghua)
+## ⚡ Optimasi Performa (Halaman Donghua & Manga)
 
 Halaman Donghua menampilkan ratusan kartu poster sekaligus, sehingga di HP kelas
 bawah scroll-nya terasa berat. Empat penyebab utamanya sudah diperbaiki:
@@ -112,6 +112,25 @@ pertama tiap baris yang `eager`), dan animasi `shimmer`/`fadeIn` dipindah dari
 Kalau `wsrv.nl` gagal (misalnya rate limit), setiap `<img>` otomatis kembali ke
 proxy Cloudflare (`cf.tiyanstores.workers.dev`) lewat handler `onError`, jadi
 poster tidak akan kosong.
+
+### Halaman Manga
+
+Halaman Manga memakai perlakuan yang sama (poster `wsrv.nl w=300 webp`, badge
+tanpa `backdrop-blur`, tanpa `group-hover:scale-110`, banner jadi `HeroBanner`
+memo, grid browse pakai `.lazy-grid`), plus dua perbaikan tambahan:
+
+| Masalah | Sebelum | Sesudah |
+|---|---|---|
+| Cover halaman detail | PNG asli **230 KB** dipakai untuk kartu 208 px | `wsrv.nl w=400` → **27 KB**; latar `w=60` |
+| Ketergantungan proxy | **semua** request API lewat `cf.tiyanstores.workers.dev` | `fetch` **langsung** ke `komikindo.ch`, proxy hanya fallback |
+
+Alasan poin kedua: `*.workers.dev` ternyata **diblokir di level DNS oleh sebagian
+operator** (contoh terukur: XL Axiata mengarahkan seluruh `*.workers.dev` ke
+`blockpage.xlaxiata.id` → `108.137.176.189`). Selama semua request lewat worker,
+halaman Manga kosong total untuk pengguna di jaringan tersebut. Komikindo sendiri
+sudah mengirim header `Access-Control-Allow-Origin` untuk domain situs, jadi
+`fetch` langsung aman; helper `mangaFetch()` mencoba direct dulu lalu jatuh ke
+proxy kalau gagal (dev/CORS/jaringan lain).
 
 ## 🤝 Kontribusi (Contributing)
 
