@@ -1,69 +1,81 @@
-// Proxy same-origin untuk anichin.moe.
+// Proxy same-origin untuk anichin.moe via curl.
 //
-// Kenapa ada file ini:
-//  - Frontend sebelumnya mengambil HTML donghua lewat Cloudflare Worker
-//    (cf.tiyanstores.workers.dev). Di sebagian operator (mis. XL Axiata)
-//    seluruh *.workers.dev di-DNS-hijack ke blockpage -> fetch gagal total
-//    dan halaman Donghua berakhir "Gagal Memuat".
-//  - Rewrite murni di vercel.json ("/anichin/:path*") tidak bisa mempertahankan
-//    trailing slash (anichin butuh "/ongoing/", bukan "/ongoing"), jadi request
-//    jatuh ke catch-all SPA dan yang dikirim balik index.html aplikasi.
+// Sejarah:
+//  - Dulu HTML donghua lewat Cloudflare Worker (*.workers.dev), tapi di sebagian
+//    operator (mis. XL Axiata) praktis SEMUA *.workers.dev di-DNS-hijack ->
+//    halaman Donghua selalu "Gagal Memuat".
+//  - Rewrite vercel.json "https://anichin.moe/:path*" tidak bisa mempertahankan
+//    trailing slash (anichin butuh /ongoing/ bukan /ongoing).
+//  - fetch() Node di Vercel = undici -> fingerprint TLS-nya BLOKIR oleh Cloudflare
+//    anichin (HTTP 403 "Access denied"). Curl 8.21.0 yang tersedia di runtime
+//    Vercel lolos (sama seperti transport curl di Aisoft2 API untuk animein).
 //
-// Jadi: function ini menerima path apa adanya lewat ?path=, meneruskan UA
-// browser pengunjung (anichin menolak request tanpa UA), lalu mem-pipe balik
-// body + content-type aslinya.
+// Pemakaian: /api/anichin?path=/ongoing/  (path dikirim apa adanya, trailing slash tetap)
 
 const ORIGIN = 'https://anichin.moe';
 const FALLBACK_UA =
   'Mozilla/5.0 (Linux; Android 13; SM-A035F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+const MAX_BYTES = 16 * 1024 * 1024; // guard memori function
 
 export default async function handler(req, res) {
   const url = new URL(req.url, 'https://local');
   let path = url.searchParams.get('path') || '/';
   if (!path.startsWith('/')) path = '/' + path;
 
-  const target = new URL(ORIGIN + path);
-
-  // Path yang aman saja: tidak boleh keluar dari origin anichin.
-  if (target.hostname !== 'anichin.moe') {
+  if (path.includes('://')) {
     res.statusCode = 400;
     res.setHeader('content-type', 'application/json');
-    return res.end(JSON.stringify({ ok: false, error: 'host tidak diizinkan' }));
+    return res.end(JSON.stringify({ ok: false, error: 'path tidak diizinkan' }));
   }
 
-  const headers = {
-    'user-agent': req.headers['user-agent'] || FALLBACK_UA,
-    accept:
-      req.headers['accept'] ||
-      'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'accept-language': req.headers['accept-language'] || 'id-ID,id;q=0.9,en;q=0.8',
-    'accept-encoding': 'gzip, deflate, br',
-  };
+  const target = ORIGIN + path;
+  const ua = (req.headers['user-agent'] || FALLBACK_UA).replace(/'/g, '');
+  // hanya izinkan karakter path yang wajar (anti CRLF/header injection lewat query)
+  if (/[\r\n]/.test(path)) {
+    res.statusCode = 400;
+    res.setHeader('content-type', 'application/json');
+    return res.end(JSON.stringify({ ok: false, error: 'path tidak diizinkan' }));
+  }
 
+  let out = Buffer.alloc(0);
   try {
-    const started = Date.now();
-    const r = await fetch(target.toString(), { headers, redirect: 'follow' });
-    const ct = r.headers.get('content-type') || 'application/octet-stream';
-    const isHtml = ct.includes('text/html');
-
-    res.statusCode = r.status;
-    res.setHeader('content-type', ct);
-    res.setHeader('x-proxy-via', 'vercel-anichin');
-    res.setHeader(
-      'cache-control',
-      r.ok ? (isHtml ? 'public, max-age=60, stale-while-revalidate=300' : 'public, max-age=86400') : 'no-store'
-    );
-
-    if (!r.body) return res.end();
-    // Stream supaya gambar/berkas besar tidak menumpuk di memori function.
-    const { Readable } = await import('node:stream');
-    Readable.fromWeb(r.body).pipe(res);
-    res.on('finish', () => {
-      if (process.env.PROXY_DEBUG) console.log('[anichin]', r.status, path, Date.now() - started, 'ms');
+    const { execFile } = await import('node:child_process');
+    out = await new Promise((resolve) => {
+      execFile('curl', [
+        '-sS', '-L', '--max-time', '25', '--compressed',
+        '--user-agent', ua,
+        '--accept', 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        '--accept-language', 'id-ID,id;q=0.9,en;q=0.8',
+        '-w', '\n__CURL_STATUS__%{http_code}__CURL_CT__%{content_type}',
+        '--', target,
+      ], { encoding: 'buffer', maxBuffer: MAX_BYTES, timeout: 28000 }, (err, stdout) => {
+        if (stdout && stdout.length) resolve(stdout);
+        else resolve(Buffer.alloc(0));
+      });
     });
   } catch (err) {
     res.statusCode = 502;
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ ok: false, error: String((err && err.message) || err), path }));
+    return res.end(JSON.stringify({ ok: false, error: String((err && err.message) || err) }));
   }
+
+  // curl breathes -w di akhir; pisahkan body dari trailer __CURL_STATUS__
+  const buf = out;
+  const marker = Buffer.from('\n__CURL_STATUS__');
+  const idx = buf.lastIndexOf(marker);
+  const body = idx >= 0 ? buf.subarray(0, idx) : buf;
+  const meta = idx >= 0 ? buf.subarray(idx + marker.length).toString('latin1') : '0';
+  const m = meta.match(/^([\d]+)__CURL_CT__(.*)$/);
+  const status = m ? parseInt(m[1], 10) : 502;
+  const ctype = m && m[2] ? m[2] : 'text/html; charset=utf-8';
+  const isHtml = ctype.includes('text/html');
+
+  res.statusCode = status || 502;
+  res.setHeader('content-type', ctype);
+  res.setHeader('x-proxy-via', 'vercel-anichin-curl');
+  if (!isHtml) res.setHeader('cache-control', 'public, max-age=86400');
+  else if (status === 200) res.setHeader('cache-control', 'public, max-age=60, stale-while-revalidate=300');
+  else res.setHeader('cache-control', 'no-store');
+  res.setHeader('x-upstream-url', target);
+  res.end(body);
 }
