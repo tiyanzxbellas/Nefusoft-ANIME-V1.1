@@ -28,6 +28,20 @@ export default async function handler(req, res) {
     return res.end(JSON.stringify({ ok: false, error: 'path tidak diizinkan' }));
   }
 
+  const diag = url.searchParams.get('diag') === '1';
+  const BROWSER_UA =
+    'Mozilla/5.0 (Linux; Android 13; SM-A035F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+  const baseArgs = [
+    '-sS', '-L', '--max-time', '20', '--compressed',
+    '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    '-H', 'Accept-Language: id-ID,id;q=0.9,en;q=0.8',
+    '-H', 'Upgrade-Insecure-Requests: 1',
+    '-H', 'Sec-Fetch-Dest: document',
+    '-H', 'Sec-Fetch-Mode: navigate',
+    '-H', 'Sec-Fetch-Site: none',
+    '-H', 'Sec-Fetch-User: ?1',
+  ];
+
   const target = ORIGIN + path;
   const ua = (req.headers['user-agent'] || FALLBACK_UA).replace(/'/g, '');
   // hanya izinkan karakter path yang wajar (anti CRLF/header injection lewat query)
@@ -35,6 +49,28 @@ export default async function handler(req, res) {
     res.statusCode = 400;
     res.setHeader('content-type', 'application/json');
     return res.end(JSON.stringify({ ok: false, error: 'path tidak diizinkan' }));
+  }
+
+  if (diag) {
+    const { execFile } = await import('node:child_process');
+    const run = (args) =>
+      new Promise((resolve) => {
+        execFile('curl', args, { encoding: 'buffer', maxBuffer: MAX_BYTES, timeout: 25000 }, (err, stdout, stderr) => {
+          resolve({ n: (stdout || Buffer.alloc(0)).length, head: (stdout || Buffer.alloc(0)).subarray(0, 120).toString('utf8').replace(/\s+/g, ' '), err: err ? String(err.message).slice(0, 120) : '', stderr: (stderr || '').toString().slice(0, 120) });
+        });
+      });
+    const workerUrl = 'https://cf.tiyanstores.workers.dev/?url=' + encodeURIComponent(target);
+    const results = {
+      direct_browser_ua: await run([...baseArgs, '-A', BROWSER_UA, '-w', '__ST__%{http_code}', '--', target]),
+      direct_curl_ua: await run([...baseArgs, '-A', 'curl/8.22.0', '-w', '__ST__%{http_code}', '--', target]),
+      via_worker: await run([...baseArgs, '-A', BROWSER_UA, '-w', '__ST__%{http_code}', '--', workerUrl]),
+      target,
+      node: process.version,
+    };
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.setHeader('cache-control', 'no-store');
+    return res.end(JSON.stringify(results, null, 1));
   }
 
   let out = Buffer.alloc(0);
