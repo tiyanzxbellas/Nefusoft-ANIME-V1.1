@@ -27,7 +27,7 @@ const anichinPath = (url) => {
   try {
     const u = new URL(abs);
     if (!ANICHIN_HOSTS.test(u.hostname)) return null;
-    return `/anichin${u.pathname}${u.search}`;
+    return `/api/anichin?path=${encodeURIComponent(u.pathname + u.search)}`;
   } catch {
     return null;
   }

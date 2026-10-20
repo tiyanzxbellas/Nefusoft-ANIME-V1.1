@@ -1,12 +1,8 @@
 {
   "rewrites": [
     {
-      "source": "/api/:path*",
-      "destination": "https://apisoft.tiyan.my.id/:path*"
-    },
-    {
-      "source": "/anichin/:path*",
-      "destination": "https://anichin.moe/:path*"
+      "source": "/api/v1/:path*",
+      "destination": "https://apisoft.tiyan.my.id/v1/:path*"
     },
     {
       "source": "/(.*\\.mp4)",
