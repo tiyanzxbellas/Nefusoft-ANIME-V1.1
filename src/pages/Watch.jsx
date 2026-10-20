@@ -4,6 +4,7 @@ import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
 import { saveHistoryItem, getHistory } from '../utils/historyManager';
 import { isFavorite, saveFavorite, removeFavorite } from '../utils/favoritesManager';
+import { mediaUrl } from '../utils/media';
 
 const ShimmerEffect = () => (
   <div className="absolute top-0 bottom-0 left-0 w-[150%] animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/5 to-transparent z-10" style={{ transform: 'translate3d(-100%, 0, 0) skewX(-20deg)' }} />
@@ -709,7 +710,7 @@ const Watch = () => {
     };
   }, [anime, currentEpId]);
 
-  const getProxyUrl = (url) => url ? `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(url)}` : '';
+  const getProxyUrl = mediaUrl;
 
   const epIndex = episodes.findIndex(e => e.id === currentEpId);
   const currentEpNum = episodes.find(e => e.id === currentEpId)?.index || '0';

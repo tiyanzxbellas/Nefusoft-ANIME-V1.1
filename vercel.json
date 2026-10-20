@@ -13,7 +13,7 @@
           "value": "(?<url>.*)"
         }
       ],
-      "destination": "https://cf.tiyanstores.workers.dev/?url=:url"
+      "destination": "https://apisoft.tiyan.my.id/v1/p/legacy.mp4?url=:url"
     },
     {
       "source": "/(.*)",

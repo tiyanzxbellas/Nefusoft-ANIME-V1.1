@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { mediaUrl } from '../utils/media';
 
 const Welcome = () => {
   const navigate = useNavigate();
@@ -22,7 +23,7 @@ const Welcome = () => {
     // Prefetch Home Anime API data in background to ensure zero-delay transitions
     const apiTimer = setTimeout(async () => {
       try {
-        const cacheKey = 'nefusoft_home_cache';
+        const cacheKey = 'nefusoft_home_cache_v3';
         let compiled = window.__NEFUSOFT_CACHE__;
         if (!compiled) {
           const cached = localStorage.getItem(cacheKey);
@@ -71,11 +72,11 @@ const Welcome = () => {
 
             if (firstCover) {
               const img = new Image();
-              img.src = `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(firstCover)}`;
+              img.src = mediaUrl(firstCover);
             }
             if (firstPoster) {
               const img = new Image();
-              img.src = `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(firstPoster)}`;
+              img.src = mediaUrl(firstPoster);
             }
           }
         }
@@ -153,7 +154,7 @@ const Welcome = () => {
               {liveResults.length > 0 && (
                 <div className="absolute top-[60px] inset-x-0 bg-white rounded-2xl overflow-hidden z-[100] max-h-64 shadow-2xl overflow-y-auto custom-scrollbar">
                   {(() => {
-                    const getProxyUrl = (url) => url ? `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(url)}` : '';
+                    const getProxyUrl = mediaUrl;
                     return liveResults.map(r => (
                       <div key={r.id} onClick={() => navigate(`/anime/${r.id}-${(r.title||'').toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, { state: { anime: r } })} className="flex items-center gap-4 p-3 hover:bg-gray-100 border-b border-gray-100 cursor-pointer text-left transition-colors">
                         <img src={getProxyUrl(r.image_poster)} referrerPolicy="no-referrer" alt={r.title} width="40" height="55" loading="lazy" decoding="async" className="w-10 rounded-md shadow-sm" />

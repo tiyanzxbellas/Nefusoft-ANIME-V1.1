@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
+import { mediaUrl } from '../utils/media';
 
 const Shimmer = () => <div className="absolute top-0 bottom-0 left-0 w-[150%] animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/5 to-transparent z-10" style={{ transform: 'translate3d(-100%, 0, 0) skewX(-20deg)' }} />;
 
@@ -37,7 +38,7 @@ const ScheduleCard = ({ a, onClick, index }) => {
   const [ep, setEp] = useState(null);
   const [isVisible, setIsVisible] = useState(false);
   const timeText = a.key_time ? a.key_time.split(' ')[1].substring(0, 5) : "--:--";
-  const getProxyUrl = (url) => url ? `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(url)}` : '';
+  const getProxyUrl = mediaUrl;
 
   useEffect(() => {
     const timer = setTimeout(() => setIsVisible(true), index * 50);

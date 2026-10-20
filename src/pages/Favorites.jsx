@@ -4,6 +4,7 @@ import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
 import ConfirmModal from '../components/ConfirmModal';
 import { getFavorites, removeFavorite } from '../utils/favoritesManager';
+import { mediaUrl } from '../utils/media';
 
 const Favorites = () => {
   const navigate = useNavigate();
@@ -61,7 +62,7 @@ const Favorites = () => {
     setTimeout(() => setToast(''), 3000);
   };
 
-  const getProxyUrl = (url) => url ? `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(url)}` : '';
+  const getProxyUrl = mediaUrl;
 
   return (
     <div className="min-h-screen bg-[#0a0a0c] selection:bg-[#F6CF80] selection:text-black pb-24 text-white">

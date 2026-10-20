@@ -5,6 +5,7 @@ import Footer from '../components/Footer';
 import ConfirmModal from '../components/ConfirmModal';
 import { getHistory, deleteHistoryItem, clearAllHistory } from '../utils/historyManager';
 import { supabase } from '../utils/supabaseClient';
+import { mediaUrl } from '../utils/media';
 
 const HistoryCard = ({ ep, group, isLatest, navigate, handleDeleteEpisode, formatTime, getProxyUrl }) => {
   const cardRef = React.useRef(null);
@@ -174,7 +175,7 @@ const History = () => {
     setTimeout(() => setToast(''), 3000);
   };
 
-  const getProxyUrl = (url) => url ? `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(url)}` : '';
+  const getProxyUrl = mediaUrl;
 
   const formatTime = (timeInSeconds) => {
     if (isNaN(timeInSeconds) || timeInSeconds === null) return "00:00";

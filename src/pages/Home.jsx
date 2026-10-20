@@ -2,12 +2,13 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
+import { mediaUrl } from '../utils/media';
 
 const Shimmer = () => (
   <div className="absolute top-0 bottom-0 left-0 w-[150%] animate-[shimmer_1.5s_infinite] bg-gradient-to-r from-transparent via-white/5 to-transparent z-10" style={{ transform: 'translate3d(-100%, 0, 0) skewX(-20deg)' }} />
 );
 
-const getProxyUrl = (url) => url ? `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(url)}` : '';
+const getProxyUrl = mediaUrl;
 
 const HeroSkeleton = () => (
   <div className="w-full h-full bg-[#16161a] relative overflow-hidden flex items-end p-6 md:p-12 gap-4 md:gap-6">
@@ -44,7 +45,7 @@ const setCachedData = (key, data) => {
 
 const Home = () => {
   const navigate = useNavigate();
-  const localCache = getCachedData('nefusoft_home_cache');
+  const localCache = getCachedData('nefusoft_home_cache_v3');
   const [schedule, setSchedule] = useState(window.__NEFUSOFT_CACHE__?.schedule || localCache?.schedule || {});
   const [ongoing, setOngoing] = useState(window.__NEFUSOFT_CACHE__?.ongoing || localCache?.ongoing || []);
   const [popular, setPopular] = useState(window.__NEFUSOFT_CACHE__?.popular || localCache?.popular || []);
@@ -102,7 +103,7 @@ const Home = () => {
         setOngoing(shuffledOngoing);
         setPopular(popData);
         window.__NEFUSOFT_CACHE__ = { schedule: schData, ongoing: shuffledOngoing, popular: popData };
-        setCachedData('nefusoft_home_cache', { schedule: schData, ongoing: shuffledOngoing, popular: popData });
+        setCachedData('nefusoft_home_cache_v3', { schedule: schData, ongoing: shuffledOngoing, popular: popData });
       } catch (e) {
       } finally {
         if (isMounted) setIsLoading(false);

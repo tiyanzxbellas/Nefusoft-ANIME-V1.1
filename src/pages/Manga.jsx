@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
+import { mediaUrl } from '../utils/media';
 
 const API_BASE = 'https://komikindo.ch/wp-json/apk';
 
@@ -10,10 +11,7 @@ const getApiUrl = (url) => {
 };
 
 // Helper to secure referrer policy / image proxy
-const getMangaImg = (url) => {
-  if (!url) return '';
-  return `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(url)}`;
-};
+const getMangaImg = (url) => mediaUrl(url);
 
 // Component for rendering chapter pages with multi-source fallback
 const ChapterImage = ({ imgUrl, pageNum }) => {
