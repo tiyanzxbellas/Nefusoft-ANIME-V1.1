@@ -1,12 +1,16 @@
 {
-  "rewrites":[
+  "rewrites": [
     {
       "source": "/api/:path*",
       "destination": "https://apisoft.tiyan.my.id/:path*"
     },
     {
+      "source": "/anichin/:path*",
+      "destination": "https://anichin.moe/:path*"
+    },
+    {
       "source": "/(.*\\.mp4)",
-      "has":[
+      "has": [
         {
           "type": "query",
           "key": "url",

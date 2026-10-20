@@ -15,14 +15,36 @@ const absUrl = (url) => {
   return `${API_BASE}${url.startsWith('/') ? '' : '/'}${url}`;
 };
 
+// Jalur utama: proxy SAME-ORIGIN lewat rewrite Vercel (/anichin/* -> anichin.moe).
+// Alasan: *.workers.dev di-DNS-hijack sebagian operator (mis. XL Axiata ->
+// blockpage.xlaxiata.id), jadi fetch ke worker gagal total dan halaman kosong.
+// Same-origin juga menghapus kebutuhan CORS.
+const ANICHIN_HOSTS = /(^|\.)anichin\.(moe|care|cafe)$/i;
+
+const anichinPath = (url) => {
+  const abs = absUrl(url);
+  if (!abs) return '';
+  try {
+    const u = new URL(abs);
+    if (!ANICHIN_HOSTS.test(u.hostname)) return null;
+    return `/anichin${u.pathname}${u.search}`;
+  } catch {
+    return null;
+  }
+};
+
 const getApiUrl = (url) => {
-  return `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(url)}`;
+  const same = anichinPath(url);
+  if (same) return same;
+  return `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(absUrl(url))}`;
 };
 
 const getProxyUrl = (url) => {
   const abs = absUrl(url);
   if (!abs) return '';
-  // Force external images/assets to go through the proxy to bypass 403 / CORS
+  const same = anichinPath(abs);
+  if (same) return same;
+  // Host lain (embed/streaming pihak ketiga) tetap lewat worker.
   return `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(abs)}`;
 };
 
