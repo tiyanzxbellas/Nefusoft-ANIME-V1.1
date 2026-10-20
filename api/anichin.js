@@ -1,138 +1,129 @@
-// Proxy same-origin untuk anichin.moe via curl.
+// Proxy same-origin untuk anichin.moe (halaman Donghua).
 //
-// Sejarah:
-//  - Dulu HTML donghua lewat Cloudflare Worker (*.workers.dev), tapi di sebagian
-//    operator (mis. XL Axiata) praktis SEMUA *.workers.dev di-DNS-hijack ->
-//    halaman Donghua selalu "Gagal Memuat".
-//  - Rewrite vercel.json "https://anichin.moe/:path*" tidak bisa mempertahankan
-//    trailing slash (anichin butuh /ongoing/ bukan /ongoing).
-//  - fetch() Node di Vercel = undici -> fingerprint TLS-nya BLOKIR oleh Cloudflare
-//    anichin (HTTP 403 "Access denied"). Curl 8.21.0 yang tersedia di runtime
-//    Vercel lolos (sama seperti transport curl di Aisoft2 API untuk animein).
+// Tiga masalah nyata yang diselesaikan file ini:
+//  1. Dulu frontend mengambil HTML lewat Cloudflare Worker (cf.tiyanstores.workers.dev).
+//     Di sebagian operator (mis. XL Axiata) seluruh *.workers.dev di-DNS-hijack ke
+//     blockpage -> fetch dari browser gagal total, halaman "Gagal Memuat Donghua".
+//     Sekarang browser hanya bicara ke origin sendiri (/api/anichin).
+//  2. Rewrite vercel.json ("https://anichin.moe/:path*") tidak bisa mempertahankan
+//     trailing slash, padahal anichin butuh "/ongoing/" (tanpa slash = 403).
+//     Function ini menerima path mentah lewat ?path= sehingga slash utuh.
+//  3. Cloudflare anichin menantang request ber-UA non-browser ("curl/8.x" ->
+//     "Just a moment..."). Dengan UA browser + header Sec-Fetch hasilnya 200.
+//     Kalau tetap kena challenge / gagal, otomatis fallback ke worker (dipanggil
+//     dari server Vercel, jadi blokir DNS operator tidak berpengaruh).
 //
-// Pemakaian: /api/anichin?path=/ongoing/  (path dikirim apa adanya, trailing slash tetap)
+// Pemakaian: /api/anichin?path=/ongoing/   (tambahkan &diag=1 untuk diagnosa)
 
 const ORIGIN = 'https://anichin.moe';
-const FALLBACK_UA =
+const WORKER = 'https://cf.tiyanstores.workers.dev/?url=';
+const BROWSER_UA =
   'Mozilla/5.0 (Linux; Android 13; SM-A035F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
-const MAX_BYTES = 16 * 1024 * 1024; // guard memori function
+const MAX_BYTES = 16 * 1024 * 1024;
+
+const baseHeaders = (ua) => [
+  '-sS', '-L', '--max-time', '20', '--compressed',
+  '-A', ua,
+  '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  '-H', 'Accept-Language: id-ID,id;q=0.9,en;q=0.8',
+  '-H', 'Upgrade-Insecure-Requests: 1',
+  '-H', 'Sec-Fetch-Dest: document',
+  '-H', 'Sec-Fetch-Mode: navigate',
+  '-H', 'Sec-Fetch-Site: none',
+  '-H', 'Sec-Fetch-User: ?1',
+];
+
+async function runCurl(url, ua) {
+  const { execFile } = await import('node:child_process');
+  const args = [...baseHeaders(ua), '-w', '\n__S__%{http_code}__CT__%{content_type}', '--', url];
+  const res = await new Promise((resolve) => {
+    execFile('curl', args, { encoding: 'buffer', maxBuffer: MAX_BYTES, timeout: 25000 }, (err, stdout, stderr) => {
+      resolve({ err, stdout: stdout || Buffer.alloc(0), stderr: stderr ? stderr.toString('utf8') : '' });
+    });
+  });
+
+  const buf = res.stdout;
+  const idx = buf.lastIndexOf(Buffer.from('\n__S__'));
+  const body = idx >= 0 ? buf.subarray(0, idx) : buf;
+  const meta = idx >= 0 ? buf.subarray(idx + 5).toString('latin1') : '';
+  const m = meta.match(/^(\d+)__CT__(.*)$/);
+  return {
+    status: m ? parseInt(m[1], 10) : 0,
+    ctype: (m && m[2]) || 'text/html; charset=utf-8',
+    body,
+    err: res.err ? String(res.err.message || res.err).slice(0, 200) : '',
+    stderr: (res.stderr || '').slice(0, 200),
+  };
+}
+
+const looksBlocked = (r) => {
+  if (!r || !r.body || r.body.length === 0) return true;
+  if (r.status === 0 || r.status >= 400) return true;
+  const head = r.body.subarray(0, 400).toString('utf8');
+  return /Just a moment|Access denied|Attention Required|cf-browser-verification/i.test(head);
+};
 
 export default async function handler(req, res) {
   const url = new URL(req.url, 'https://local');
   let path = url.searchParams.get('path') || '/';
   if (!path.startsWith('/')) path = '/' + path;
-
-  if (path.includes('://')) {
+  if (path.includes('://') || /[\r\n]/.test(path)) {
     res.statusCode = 400;
     res.setHeader('content-type', 'application/json');
     return res.end(JSON.stringify({ ok: false, error: 'path tidak diizinkan' }));
   }
-
-  const diag = url.searchParams.get('diag') === '1';
-  const BROWSER_UA =
-    'Mozilla/5.0 (Linux; Android 13; SM-A035F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
-  const baseArgs = [
-    '-sS', '-L', '--max-time', '20', '--compressed',
-    '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    '-H', 'Accept-Language: id-ID,id;q=0.9,en;q=0.8',
-    '-H', 'Upgrade-Insecure-Requests: 1',
-    '-H', 'Sec-Fetch-Dest: document',
-    '-H', 'Sec-Fetch-Mode: navigate',
-    '-H', 'Sec-Fetch-Site: none',
-    '-H', 'Sec-Fetch-User: ?1',
-  ];
 
   const target = ORIGIN + path;
-  const ua = (req.headers['user-agent'] || FALLBACK_UA).replace(/'/g, '');
-  // hanya izinkan karakter path yang wajar (anti CRLF/header injection lewat query)
-  if (/[\r\n]/.test(path)) {
-    res.statusCode = 400;
-    res.setHeader('content-type', 'application/json');
-    return res.end(JSON.stringify({ ok: false, error: 'path tidak diizinkan' }));
+  const clientUa = req.headers['user-agent'] || '';
+  // UA klien dipakai kalau memang browser; kalau tidak, pakai UA browser cadangan.
+  const ua = /Mozilla\/5\.0|Chrome\/|Safari\//i.test(clientUa) ? clientUa : BROWSER_UA;
+
+  const direct = await runCurl(target, ua);
+  let picked = direct;
+  let transport = 'direct';
+
+  if (looksBlocked(direct)) {
+    const viaWorker = await runCurl(WORKER + encodeURIComponent(target), ua);
+    if (!looksBlocked(viaWorker) || direct.body.length === 0) {
+      picked = viaWorker;
+      transport = 'worker';
+    }
   }
 
-  if (diag) {
-    const { execFile } = await import('node:child_process');
-    const run = (args) =>
-      new Promise((resolve) => {
-        execFile('curl', args, { encoding: 'buffer', maxBuffer: MAX_BYTES, timeout: 25000 }, (err, stdout, stderr) => {
-          resolve({ n: (stdout || Buffer.alloc(0)).length, head: (stdout || Buffer.alloc(0)).subarray(0, 120).toString('utf8').replace(/\s+/g, ' '), err: err ? String(err.message).slice(0, 120) : '', stderr: (stderr || '').toString().slice(0, 120) });
-        });
-      });
-    const workerUrl = 'https://cf.tiyanstores.workers.dev/?url=' + encodeURIComponent(target);
-    const results = {
-      direct_browser_ua: await run([...baseArgs, '-A', BROWSER_UA, '-w', '__ST__%{http_code}', '--', target]),
-      direct_curl_ua: await run([...baseArgs, '-A', 'curl/8.22.0', '-w', '__ST__%{http_code}', '--', target]),
-      via_worker: await run([...baseArgs, '-A', BROWSER_UA, '-w', '__ST__%{http_code}', '--', workerUrl]),
-      target,
-      node: process.version,
-    };
+  if (url.searchParams.get('diag') === '1') {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json; charset=utf-8');
     res.setHeader('cache-control', 'no-store');
-    return res.end(JSON.stringify(results, null, 1));
-  }
-
-  let out = Buffer.alloc(0);
-  let errMsg = '';
-  let errStderr = '';
-  try {
-    const { execFile } = await import('node:child_process');
-    const result = await new Promise((resolve) => {
-      execFile('curl', [
-        '-sS', '-L', '--max-time', '25', '--compressed',
-        '--user-agent', ua,
-        '-H', 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        '-H', 'Accept-Language: id-ID,id;q=0.9,en;q=0.8',
-        '-w', '\n__CURL_STATUS__%{http_code}__CURL_CT__%{content_type}',
-        '--', target,
-      ], { encoding: 'buffer', maxBuffer: MAX_BYTES, timeout: 28000 }, (err, stdout, stderr) => {
-        resolve({ err, stdout, stderr });
-      });
-    });
-    out = result.stdout && result.stdout.length ? result.stdout : Buffer.alloc(0);
-    if (result.err) errMsg = String(result.err.message || result.err);
-    if (result.stderr && result.stderr.length) errStderr = result.stderr.toString('utf8').slice(0, 400);
-  } catch (err) {
-    errMsg = String((err && err.message) || err);
-  }
-
-  const markerIdx = out.lastIndexOf(Buffer.from('\n__CURL_STATUS__'));
-  if (markerIdx < 0) {
-    // curl gagal total (biner hilang / DNS / timeout) -> balas diagnostik
-    res.statusCode = 502;
-    res.setHeader('content-type', 'application/json; charset=utf-8');
-    res.setHeader('cache-control', 'no-store');
-    res.setHeader('x-proxy-via', 'vercel-anichin-curl');
     return res.end(
-      JSON.stringify({
-        ok: false,
-        target,
-        curl_error: errMsg || '(stdout kosong tanpa error)',
-        curl_stderr: errStderr,
-        bytes: out.length,
-        node: process.version,
-      })
+      JSON.stringify(
+        {
+          target,
+          transport,
+          direct: { status: direct.status, bytes: direct.body.length, err: direct.err },
+          worker_used: transport === 'worker',
+          picked: { status: picked.status, bytes: picked.body.length, ctype: picked.ctype },
+          node: process.version,
+        },
+        null,
+        1
+      )
     );
   }
 
-  // curl breathes -w di akhir; pisahkan body dari trailer __CURL_STATUS__
-  const buf = out;
-  const marker = Buffer.from('\n__CURL_STATUS__');
-  const idx = buf.lastIndexOf(marker);
-  const body = idx >= 0 ? buf.subarray(0, idx) : buf;
-  const meta = idx >= 0 ? buf.subarray(idx + marker.length).toString('latin1') : '0';
-  const m = meta.match(/^([\d]+)__CURL_CT__(.*)$/);
-  const status = m ? parseInt(m[1], 10) : 502;
-  const ctype = m && m[2] ? m[2] : 'text/html; charset=utf-8';
-  const isHtml = ctype.includes('text/html');
+  if (looksBlocked(picked)) {
+    res.statusCode = 502;
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    res.setHeader('cache-control', 'no-store');
+    return res.end(
+      JSON.stringify({ ok: false, target, transport, upstream_status: picked.status, err: picked.err, stderr: picked.stderr })
+    );
+  }
 
-  res.statusCode = status || 502;
-  res.setHeader('content-type', ctype);
-  res.setHeader('x-proxy-via', 'vercel-anichin-curl');
-  if (!isHtml) res.setHeader('cache-control', 'public, max-age=86400');
-  else if (status === 200) res.setHeader('cache-control', 'public, max-age=60, stale-while-revalidate=300');
-  else res.setHeader('cache-control', 'no-store');
-  res.setHeader('x-upstream-url', target);
-  res.end(body);
+  const isHtml = picked.ctype.includes('text/html');
+  res.statusCode = picked.status || 502;
+  res.setHeader('content-type', picked.ctype);
+  res.setHeader('x-proxy-via', 'vercel-anichin');
+  res.setHeader('x-proxy-transport', transport);
+  res.setHeader('cache-control', isHtml ? 'public, max-age=60, stale-while-revalidate=300' : 'public, max-age=86400');
+  res.end(picked.body);
 }
