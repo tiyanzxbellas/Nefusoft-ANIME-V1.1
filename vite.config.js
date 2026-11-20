@@ -6,6 +6,17 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     proxy: {
+      // /api/anichin di-handle oleh serverless function api/anichin.js di
+      // produksi (Vercel). Di dev (Vite), proxikan ke anichin.moe langsung
+      // agar tidak tertangkap oleh proxy '/api' ke apisoft.tiyan.my.id.
+      '/api/anichin': {
+        target: 'https://anichin.moe',
+        changeOrigin: true,
+        rewrite: (path) => {
+          const m = path.match(/\?path=([^&]*)/);
+          return m ? decodeURIComponent(m[1]) : '/';
+        },
+      },
       '/api': {
         target: 'https://apisoft.tiyan.my.id',
         changeOrigin: true,
