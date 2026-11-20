@@ -2,127 +2,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
-
-// Anichin rotated its domain: anichin.cafe is dead (NXDOMAIN, delegation dropped).
-// Main site is anichin.moe (anichin.care is only the official landing page).
-const API_BASE = 'https://anichin.moe';
-
-// Anichin serves relative paths (/wp-content/..., /slug/) -> make them absolute
-// so the CORS proxy gets a full URL.
-const absUrl = (url) => {
-  if (!url) return '';
-  if (/^(https?:)?\/\//i.test(url) || url.startsWith('data:') || url.startsWith('blob:')) return url;
-  return `${API_BASE}${url.startsWith('/') ? '' : '/'}${url}`;
-};
-
-// Jalur utama: proxy SAME-ORIGIN lewat rewrite Vercel (/anichin/* -> anichin.moe).
-// Alasan: *.workers.dev di-DNS-hijack sebagian operator (mis. XL Axiata ->
-// blockpage.xlaxiata.id), jadi fetch ke worker gagal total dan halaman kosong.
-// Same-origin juga menghapus kebutuhan CORS.
-const ANICHIN_HOSTS = /(^|\.)anichin\.(moe|care|cafe)$/i;
-
-const anichinPath = (url) => {
-  const abs = absUrl(url);
-  if (!abs) return '';
-  try {
-    const u = new URL(abs);
-    if (!ANICHIN_HOSTS.test(u.hostname)) return null;
-    return `/api/anichin?path=${encodeURIComponent(u.pathname + u.search)}`;
-  } catch {
-    return null;
-  }
-};
-
-const getApiUrl = (url) => {
-  const same = anichinPath(url);
-  if (same) return same;
-  return `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(absUrl(url))}`;
-};
-
-const getProxyUrl = (url) => {
-  const abs = absUrl(url);
-  if (!abs) return '';
-  const same = anichinPath(abs);
-  if (same) return same;
-  // Host lain (embed/streaming pihak ketiga) tetap lewat worker.
-  return `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(abs)}`;
-};
-
-// Cek apakah respons terlihat seperti HTML asli dari anichin.moe (bukan
-// index.html SPA yang dikembalikan catch-all Vercel, bukan halaman error,
-// dan tidak kosong). Harus mengandung penanda konten asli anichin (.bsx
-// kartu atau swiper-slide banner), bukan cuma <html> kosong dari SPA.
-const isValidAnichinHtml = (html) => {
-  if (!html || html.length < 100) return false;
-  const lower = html.toLowerCase();
-  // Harus ada penanda konten asli anichin, bukan cuma boilerplate HTML SPA.
-  return lower.includes('bsx') || lower.includes('swiper-slide');
-};
-
-// Ambil HTML dari anichin.moe melalui proxy same-origin (/api/anichin). Jika
-// proxy mengembalikan kosong / bukan HTML (mis. route belum tersedia atau
-// SPA catch-all menangani), coba ulang melalui Cloudflare Worker sebagai
-// fallback agar halaman tidak langsung "Gagal Memuat Donghua".
-const fetchAnichinHtml = async (url) => {
-  const apiUrl = getApiUrl(url);
-  let html = '';
-  try {
-    const r = await fetch(apiUrl);
-    html = await r.text();
-  } catch {}
-  if (isValidAnichinHtml(html)) return html;
-  // Fallback ke worker (server-side, tidak terpengaruh blokir DNS operator).
-  const workerUrl = `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(absUrl(url))}`;
-  try {
-    const r = await fetch(workerUrl);
-    html = await r.text();
-  } catch {}
-  return html;
-};
-
-// Serupa dengan fetchAnichinHtml tapi pakai getProxyUrl (termasuk host
-// non-anichin). Untuk URL anichin, jika proxy same-origin mengembalikan
-// kosong / bukan HTML, coba worker sebagai fallback.
-const fetchProxyHtml = async (url) => {
-  const proxyUrl = getProxyUrl(url);
-  let html = '';
-  try {
-    const r = await fetch(proxyUrl);
-    html = await r.text();
-  } catch {}
-  if (anichinPath(url) && !isValidAnichinHtml(html)) {
-    const workerUrl = `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(absUrl(url))}`;
-    try {
-      const r = await fetch(workerUrl);
-      html = await r.text();
-    } catch {}
-  }
-  return html;
-};
-
-// Resizer poster.
-// Poster asli dari anichin.moe besarnya 60-500 KB (sampai 960x1280 px), padahal
-// di kartu cuma dipakai 120x180 px. Browser tetap harus decode resolusi penuh
-// (~4,9 MB bitmap per gambar), dan di halaman Donghua ada >100 kartu -> itu
-// penyebab utama scroll berat. wsrv.nl bikin versi kecil + webp: payload turun
-// ~90% dan beban decode ikut turun drastis.
-const wsrvUrl = (url, width) => {
-  const abs = absUrl(url);
-  if (!abs) return '';
-  if (!/^https?:/i.test(abs)) return abs;
-  return `https://wsrv.nl/?url=${encodeURIComponent(abs)}&w=${width}&output=webp&q=72&we`;
-};
-
-// Kalau resizer gagal (host down / rate limit), <img> balik ke proxy biasa.
-// data-fallback menjaga supaya tidak terjadi loop onError tanpa henti.
-const onImgError = (e) => {
-  const el = e.currentTarget;
-  if (!el || el.dataset.fallback === '1') return;
-  const raw = el.dataset.raw;
-  if (!raw) return;
-  el.dataset.fallback = '1';
-  el.src = getProxyUrl(raw);
-};
+import {
+  API_BASE,
+  absUrl,
+  getProxyUrl,
+  wsrvUrl,
+  onImgError,
+  fetchAnichinHtml,
+  fetchProxyHtml,
+} from '../utils/anichin';
 
 const Shimmer = () => (
   <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/5 to-transparent animate-[shimmer_1.5s_infinite] z-10" style={{ transform: 'skewX(-20deg)' }} />
