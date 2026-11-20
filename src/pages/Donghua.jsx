@@ -48,6 +48,60 @@ const getProxyUrl = (url) => {
   return `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(abs)}`;
 };
 
+// Cek apakah respons terlihat seperti HTML asli dari anichin.moe (bukan
+// index.html SPA, bukan halaman error, dan tidak kosong).
+const isValidAnichinHtml = (html) => {
+  if (!html || html.length < 100) return false;
+  const lower = html.toLowerCase();
+  return (
+    lower.includes('<!doctype html') ||
+    lower.includes('<html') ||
+    lower.includes('bsx') ||
+    lower.includes('swiper-slide')
+  );
+};
+
+// Ambil HTML dari anichin.moe melalui proxy same-origin (/api/anichin). Jika
+// proxy mengembalikan kosong / bukan HTML (mis. route belum tersedia atau
+// SPA catch-all menangani), coba ulang melalui Cloudflare Worker sebagai
+// fallback agar halaman tidak langsung "Gagal Memuat Donghua".
+const fetchAnichinHtml = async (url) => {
+  const apiUrl = getApiUrl(url);
+  let html = '';
+  try {
+    const r = await fetch(apiUrl);
+    html = await r.text();
+  } catch {}
+  if (isValidAnichinHtml(html)) return html;
+  // Fallback ke worker (server-side, tidak terpengaruh blokir DNS operator).
+  const workerUrl = `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(absUrl(url))}`;
+  try {
+    const r = await fetch(workerUrl);
+    html = await r.text();
+  } catch {}
+  return html;
+};
+
+// Serupa dengan fetchAnichinHtml tapi pakai getProxyUrl (termasuk host
+// non-anichin). Untuk URL anichin, jika proxy same-origin mengembalikan
+// kosong / bukan HTML, coba worker sebagai fallback.
+const fetchProxyHtml = async (url) => {
+  const proxyUrl = getProxyUrl(url);
+  let html = '';
+  try {
+    const r = await fetch(proxyUrl);
+    html = await r.text();
+  } catch {}
+  if (anichinPath(url) && !isValidAnichinHtml(html)) {
+    const workerUrl = `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(absUrl(url))}`;
+    try {
+      const r = await fetch(workerUrl);
+      html = await r.text();
+    } catch {}
+  }
+  return html;
+};
+
 // Resizer poster.
 // Poster asli dari anichin.moe besarnya 60-500 KB (sampai 960x1280 px), padahal
 // di kartu cuma dipakai 120x180 px. Browser tetap harus decode resolusi penuh
@@ -313,9 +367,9 @@ export default function Donghua() {
       try {
         // Fetch Home, Ongoing and Completed in parallel
         const [homeHtml, ongoingHtml, completedHtml] = await Promise.all([
-          fetch(getApiUrl(API_BASE)).then(r => r.text()).catch(() => ''),
-          fetch(getApiUrl(`${API_BASE}/ongoing/`)).then(r => r.text()).catch(() => ''),
-          fetch(getApiUrl(`${API_BASE}/completed/`)).then(r => r.text()).catch(() => '')
+          fetchAnichinHtml(API_BASE),
+          fetchAnichinHtml(`${API_BASE}/ongoing/`),
+          fetchAnichinHtml(`${API_BASE}/completed/`)
         ]);
 
         const parser = new DOMParser();
@@ -402,7 +456,7 @@ export default function Donghua() {
         setRating(fallbackPopular); // Use fallback popular for rating as rating is similar
 
         // Fetch Schedule & Set Day
-        const scheduleHtml = await fetch(getApiUrl(`${API_BASE}/schedule/`)).then(r => r.text()).catch(() => '');
+        const scheduleHtml = await fetchAnichinHtml(`${API_BASE}/schedule/`);
         const scheduleDoc = parser.parseFromString(scheduleHtml, 'text/html');
 
         const schedData = [];
@@ -480,7 +534,7 @@ export default function Donghua() {
         }
       }
 
-      const resHtml = await fetch(getApiUrl(url)).then(r => r.text());
+      const resHtml = await fetchAnichinHtml(url);
       const parser = new DOMParser();
       const doc = parser.parseFromString(resHtml, 'text/html');
       const cards = parseBsxCards(doc);
@@ -517,7 +571,7 @@ export default function Donghua() {
         setEpisodesList([]);
         setEpisodeSearch('');
         try {
-          const resHtml = await fetch(getProxyUrl(activeUrl)).then(r => r.text());
+          const resHtml = await fetchProxyHtml(activeUrl);
           const parser = new DOMParser();
           const doc = parser.parseFromString(resHtml, 'text/html');
 
@@ -593,7 +647,7 @@ export default function Donghua() {
         setWatchData(null);
         setSelectedServer(null);
         try {
-          const resHtml = await fetch(getProxyUrl(activeUrl)).then(r => r.text());
+          const resHtml = await fetchProxyHtml(activeUrl);
           const parser = new DOMParser();
           const doc = parser.parseFromString(resHtml, 'text/html');
 
@@ -666,7 +720,7 @@ export default function Donghua() {
             const allEpisodesUrl = doc.querySelector('.naveps .nvsc a')?.getAttribute('href') || '';
             if (allEpisodesUrl) {
               try {
-                const detailHtml = await fetch(getProxyUrl(allEpisodesUrl)).then(r => r.text());
+                const detailHtml = await fetchProxyHtml(allEpisodesUrl);
                 const detailDoc = parser.parseFromString(detailHtml, 'text/html');
                 const eps = [];
                 detailDoc.querySelectorAll('.eplister ul li').forEach(li => {

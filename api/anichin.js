@@ -59,6 +59,48 @@ async function runCurl(url, ua) {
   };
 }
 
+// Fallback menggunakan native fetch (Node 18+) kalau curl tidak tersedia
+// atau gagal total di runtime serverless.
+async function runFetch(url, ua) {
+  const resp = await fetch(url, {
+    redirect: 'follow',
+    headers: {
+      'User-Agent': ua,
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'id-ID,id;q=0.9,en;q=0.8',
+      'Upgrade-Insecure-Requests': '1',
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+    },
+  });
+  const ab = await resp.arrayBuffer();
+  return {
+    status: resp.status,
+    ctype: resp.headers.get('content-type') || 'text/html; charset=utf-8',
+    body: Buffer.from(ab),
+    err: '',
+    stderr: '',
+  };
+}
+
+// Jalankan curl dengan jaringan aman: jika curl tidak terpasang atau error,
+// tangkap dan biarkan handler menavigasi ke fallback lain.
+async function safeRunCurl(url, ua) {
+  try {
+    return await runCurl(url, ua);
+  } catch (e) {
+    return {
+      status: 0,
+      ctype: 'text/html; charset=utf-8',
+      body: Buffer.alloc(0),
+      err: String(e.message || e).slice(0, 200),
+      stderr: '',
+    };
+  }
+}
+
 const looksBlocked = (r) => {
   if (!r || !r.body || r.body.length === 0) return true;
   if (r.status === 0 || r.status >= 400) return true;
@@ -81,13 +123,23 @@ export default async function handler(req, res) {
   // UA klien dipakai kalau memang browser; kalau tidak, pakai UA browser cadangan.
   const ua = /Mozilla\/5\.0|Chrome\/|Safari\//i.test(clientUa) ? clientUa : BROWSER_UA;
 
-  const direct = await runCurl(target, ua);
+  const direct = await safeRunCurl(target, ua);
   let picked = direct;
   let transport = 'direct';
 
+  // Jika curl gagal (tidak terpasang / error runtime) atau hasilnya diblokir,
+  // coba native fetch sebagai cadangan sebelum worker.
   if (looksBlocked(direct)) {
-    const viaWorker = await runCurl(WORKER + encodeURIComponent(target), ua);
-    if (!looksBlocked(viaWorker) || direct.body.length === 0) {
+    const fetched = await runFetch(target, ua);
+    if (fetched.body.length > 0 && !looksBlocked(fetched)) {
+      picked = fetched;
+      transport = 'fetch';
+    }
+  }
+
+  if (looksBlocked(picked)) {
+    const viaWorker = await safeRunCurl(WORKER + encodeURIComponent(target), ua);
+    if (!looksBlocked(viaWorker) || picked.body.length === 0) {
       picked = viaWorker;
       transport = 'worker';
     }
