@@ -1,4 +1,9 @@
 {
+  "functions": {
+    "api/anichin.js": {
+      "maxDuration": 10
+    }
+  },
   "rewrites": [
     {
       "source": "/api/v1/:path*",

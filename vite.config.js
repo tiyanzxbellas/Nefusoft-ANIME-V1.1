@@ -5,6 +5,7 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    allowedHosts: true,
     proxy: {
       // /api/anichin di-handle oleh serverless function api/anichin.js di
       // produksi (Vercel). Di dev (Vite), proxikan ke anichin.moe langsung
