@@ -49,16 +49,14 @@ const getProxyUrl = (url) => {
 };
 
 // Cek apakah respons terlihat seperti HTML asli dari anichin.moe (bukan
-// index.html SPA, bukan halaman error, dan tidak kosong).
+// index.html SPA yang dikembalikan catch-all Vercel, bukan halaman error,
+// dan tidak kosong). Harus mengandung penanda konten asli anichin (.bsx
+// kartu atau swiper-slide banner), bukan cuma <html> kosong dari SPA.
 const isValidAnichinHtml = (html) => {
   if (!html || html.length < 100) return false;
   const lower = html.toLowerCase();
-  return (
-    lower.includes('<!doctype html') ||
-    lower.includes('<html') ||
-    lower.includes('bsx') ||
-    lower.includes('swiper-slide')
-  );
+  // Harus ada penanda konten asli anichin, bukan cuma boilerplate HTML SPA.
+  return lower.includes('bsx') || lower.includes('swiper-slide');
 };
 
 // Ambil HTML dari anichin.moe melalui proxy same-origin (/api/anichin). Jika
@@ -488,6 +486,24 @@ export default function Donghua() {
           setActiveDay(nextActiveDay);
         }
 
+        // Jika fetch sukses tapi semua data kosong (gagal parse) dan ada cache,
+        // gunakan cache agar halaman tidak langsung "Gagal Memuat Donghua".
+        if (
+          popData.length === 0 &&
+          ongData.length === 0 &&
+          updData.length === 0 &&
+          memoryCache
+        ) {
+          setPopular(memoryCache.popular || []);
+          setOngoing(memoryCache.ongoing || []);
+          setUpdates(memoryCache.updates || []);
+          setGenres(memoryCache.genres || []);
+          setRating(memoryCache.rating || []);
+          setCompleted(memoryCache.completed || []);
+          setSchedule(memoryCache.schedule || []);
+          if (memoryCache.activeDay) setActiveDay(memoryCache.activeDay);
+        }
+
         setIsHomeLoading(false);
         hasFetchedRef.current = true;
 
@@ -507,6 +523,17 @@ export default function Donghua() {
         setCachedData('nefusoft_donghua_home_cache_v4', compiled);
       } catch (e) {
         console.error('Failed to load Donghua Home data', e);
+        // Jika fetch error total dan ada cache, gunakan cache sebagai cadangan.
+        if (memoryCache) {
+          setPopular(memoryCache.popular || []);
+          setOngoing(memoryCache.ongoing || []);
+          setUpdates(memoryCache.updates || []);
+          setGenres(memoryCache.genres || []);
+          setRating(memoryCache.rating || []);
+          setCompleted(memoryCache.completed || []);
+          setSchedule(memoryCache.schedule || []);
+          if (memoryCache.activeDay) setActiveDay(memoryCache.activeDay);
+        }
         setIsHomeLoading(false);
       }
     };
