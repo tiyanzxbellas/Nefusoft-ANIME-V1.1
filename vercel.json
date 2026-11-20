@@ -5,6 +5,10 @@
       "destination": "https://apisoft.tiyan.my.id/v1/:path*"
     },
     {
+      "source": "/api/anichin",
+      "destination": "/api/anichin"
+    },
+    {
       "source": "/(.*\\.mp4)",
       "has": [
         {
