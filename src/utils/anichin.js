@@ -13,10 +13,10 @@
 //     datacenter; kalau Cloudflare menantang IP itu / function timeout,
 //     jalur (1) ikut gagal. Hasilnya halaman kosong -> "Gagal Memuat Donghua".
 //
-// Sekarang ada rantai fallback berurutan (proxyCandidates): same-origin dulu,
-// lalu proxy CORS publik yang IP-nya berbeda (allorigins, codetabs, corsproxy),
-// baru worker, terakhir direct. Selama SATU saja yang berhasil, halaman tetap
-// tampil. Semua percobaan dibatasi timeout agar tidak menggantung selamanya.
+// Sekarang tersedia beberapa kandidat transport: same-origin, proxy CORS publik
+// (allorigins, codetabs, corsproxy), worker, dan direct. Kandidat dicoba secara
+// paralel dengan timeout; respons HTML valid pertama dipakai agar satu proxy
+// yang lambat/down tidak menahan halaman Donghua.
 
 export const API_BASE = 'https://anichin.moe';
 
@@ -101,31 +101,39 @@ export const isValidAnichinHtml = (html) => {
     lower.includes('bixbox') ||
     lower.includes('eplister') ||
     lower.includes('entry-title') ||
-    lower.includes('wp-content/uploads')
+    lower.includes('wp-content/uploads') ||
+    /class=["'][^"']*\bbs\b/.test(lower) ||
+    /class=["'][^"']*\butao\b/.test(lower)
   );
 };
 
-const fetchWithTimeout = async (url, ms = 10000) => {
+const fetchWithTimeout = async (url, ms = 8500, signal) => {
   const ctrl = new AbortController();
+  const onAbort = () => ctrl.abort();
   const timer = setTimeout(() => ctrl.abort(), ms);
+  signal?.addEventListener('abort', onAbort, { once: true });
   try {
     const r = await fetch(url, { signal: ctrl.signal });
     return await r.text();
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
   }
 };
 
-// Ambil HTML lewat rantai proxy: kembalikan HTML pertama yang valid. Kalau
-// tidak ada yang valid, kembalikan HTML terpanjang yang masih masuk akal
-// (bukan JSON error / SPA) supaya parser masih punya kesempatan, bukan
-// langsung kosong.
+// Ambil HTML lewat semua kandidat pada waktu yang sama. Versi lama mencoba
+// enam proxy satu-per-satu (maksimal sekitar 60 detik); apabila Vercel/proxy
+// utama sedang diblokir, pengguna mendapat halaman gagal jauh lebih lama dari
+// yang diperlukan. Respons valid pertama langsung dipakai dan request lain
+// dibatalkan. Same-origin tetap ikut dalam kandidat agar cache/proxy Vercel
+// yang sehat tetap dapat memenangkan perlombaan.
 const fetchHtmlWithFallback = async (url) => {
   const candidates = proxyCandidates(url);
+  const controller = new AbortController();
   let best = '';
-  for (const candidate of candidates) {
-    try {
-      const html = await fetchWithTimeout(candidate, 10000);
+
+  const attempts = candidates.map((candidate) =>
+    fetchWithTimeout(candidate, 8500, controller.signal).then((html) => {
       if (isValidAnichinHtml(html)) return html;
       if (
         html &&
@@ -135,11 +143,18 @@ const fetchHtmlWithFallback = async (url) => {
       ) {
         best = html;
       }
-    } catch {
-      // Proxy ini gagal (timeout / DNS diblokir / CORS) -> coba berikutnya.
-    }
+      throw new Error('respons proxy bukan HTML Anichin yang valid');
+    })
+  );
+
+  try {
+    const html = await Promise.any(attempts);
+    controller.abort();
+    return html;
+  } catch {
+    controller.abort();
+    return best;
   }
-  return best;
 };
 
 export const fetchAnichinHtml = fetchHtmlWithFallback;
