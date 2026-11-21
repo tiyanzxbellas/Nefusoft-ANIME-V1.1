@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import Navbar from '../components/Navbar';
 import Footer from '../components/Footer';
+import donghuaSnapshot from '../data/donghuaSnapshot.json';
 import {
   API_BASE,
   absUrl,
@@ -209,6 +210,36 @@ const findBixboxByHeader = (doc, titleText) => {
   return null;
 };
 
+// Cache katalog yang dibundel bersama aplikasi. Ini bukan pengganti live
+// source: dipakai hanya bila bypass/upstream sedang menolak semua request agar
+// beranda dan pencarian tetap punya data yang dapat dipakai.
+const snapshotCatalog = Array.isArray(donghuaSnapshot.catalog) ? donghuaSnapshot.catalog : [];
+const hasRenderableDonghuaCache = (cache) =>
+  Boolean(cache) && ['popular', 'ongoing', 'updates', 'rating', 'completed']
+    .some((key) => Array.isArray(cache[key]) && cache[key].length > 0);
+
+const snapshotBrowse = ({ page = 1, query = '', genre = '', category = 'list' } = {}) => {
+  let list = snapshotCatalog;
+  if (category === 'ongoing' && Array.isArray(donghuaSnapshot.ongoing)) {
+    list = donghuaSnapshot.ongoing;
+  } else if (category === 'completed' && Array.isArray(donghuaSnapshot.completed) && donghuaSnapshot.completed.length) {
+    list = donghuaSnapshot.completed;
+  }
+
+  const cleanQuery = query.trim().toLowerCase();
+  if (cleanQuery) {
+    list = list.filter((item) => item.title?.toLowerCase().includes(cleanQuery));
+  }
+
+  // Snapshot berisi katalog kartu (judul/poster/link), bukan metadata genre
+  // lengkap per serial. Jangan menampilkan hasil kosong palsu ketika user
+  // memilih genre saat source live sedang offline.
+  const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
+  const pageSize = 30;
+  const start = (safePage - 1) * pageSize;
+  return { items: list.slice(start, start + pageSize), genreUnavailable: Boolean(genre) };
+};
+
 export default function Donghua() {
   const [searchParams, setSearchParams] = useSearchParams();
   const view = searchParams.get('view') || 'home';
@@ -239,7 +270,15 @@ export default function Donghua() {
 
   const hasFetchedRef = useRef(false);
   const localCache = getCachedData('nefusoft_donghua_home_cache_v4');
-  const memoryCache = window.__NEFUSOFT_DONGHUA_CACHE__ || localCache;
+  const sessionCache = window.__NEFUSOFT_DONGHUA_CACHE__;
+  // Versi lama dapat menyimpan object cache yang valid secara JSON tetapi
+  // seluruh list-nya kosong. Jangan biarkan cache kosong itu mengalahkan
+  // snapshot yang dibundel bersama aplikasi.
+  const memoryCache = hasRenderableDonghuaCache(sessionCache)
+    ? sessionCache
+    : hasRenderableDonghuaCache(localCache)
+      ? localCache
+      : donghuaSnapshot;
 
   // Lists & State
   const [popular, setPopular] = useState(memoryCache?.popular || []);
@@ -263,6 +302,7 @@ export default function Donghua() {
   const [browsePage, setBrowsePage] = useState(1);
   const [isBrowseLoading, setIsBrowseLoading] = useState(false);
   const [browseError, setBrowseError] = useState('');
+  const [browseNotice, setBrowseNotice] = useState('');
 
   // Details States
   const [detailsData, setDetailsData] = useState(null);
@@ -503,6 +543,7 @@ export default function Donghua() {
   const fetchBrowseResults = async (page = 1) => {
     setIsBrowseLoading(true);
     setBrowseError('');
+    setBrowseNotice('');
     try {
       const genreSlug = selectedGenre
         ? genres.find(g => g.name.toLowerCase() === selectedGenre.toLowerCase())?.slug || selectedGenre.toLowerCase().replace(/\s+/g, '-')
@@ -523,8 +564,25 @@ export default function Donghua() {
       setBrowsePage(page);
     } catch (e) {
       console.error('Failed to fetch browse/search results', e);
-      setBrowseResults([]);
-      setBrowseError(e?.message || 'Bypass Donghua sedang tidak dapat mengambil hasil.');
+      const cached = snapshotBrowse({
+        page,
+        query: searchQuery,
+        genre: selectedGenre,
+        category: selectedCategory,
+      });
+
+      if (cached.items.length > 0) {
+        setBrowseResults(cached.items);
+        setBrowsePage(page);
+        setBrowseNotice(
+          cached.genreUnavailable
+            ? 'Sumber live sedang tidak tersedia. Menampilkan katalog cache; filter genre spesifik akan aktif lagi saat source pulih.'
+            : `Sumber live sedang tidak tersedia. Menampilkan katalog cache dari ${donghuaSnapshot.updatedAt || 'sinkronisasi terakhir'}.`
+        );
+      } else {
+        setBrowseResults([]);
+        setBrowseError(e?.message || 'Bypass Donghua sedang tidak dapat mengambil hasil.');
+      }
     } finally {
       setIsBrowseLoading(false);
     }
@@ -1125,6 +1183,12 @@ export default function Donghua() {
                 </span>
                 <span className="text-white/40 text-[10px] font-bold">Halaman {browsePage}</span>
               </div>
+
+              {browseNotice && (
+                <div className="bg-[#F6CF80]/10 border border-[#F6CF80]/20 rounded-xl px-4 py-3 text-[#F6CF80] text-[11px] font-bold leading-relaxed">
+                  ℹ️ {browseNotice}
+                </div>
+              )}
 
               {isBrowseLoading ? (
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
