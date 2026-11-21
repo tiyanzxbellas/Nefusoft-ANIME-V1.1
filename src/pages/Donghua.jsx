@@ -135,24 +135,58 @@ const extractSlugFromUrl = (url) => {
   return parts[parts.length - 1];
 };
 
+// Anichin memakai tema WordPress yang sama, tetapi markup kartunya pernah
+// berganti dari `.bsx` ke `article.bs` (dan kadang `.utao`). Parser lama hanya
+// mencari `.bsx`, sehingga HTML sebenarnya berhasil diambil tetapi SEMUA list
+// menjadi kosong lalu UI menampilkan “Gagal Memuat Donghua”. Terima ketiga
+// bentuk kartu ini dan deduplikasi berdasarkan URL seri/episode.
 const parseBsxCards = (container) => {
   if (!container) return [];
   const cards = [];
-  container.querySelectorAll('.bsx').forEach(el => {
-    const a = el.querySelector('a');
-    if (!a) return;
-    const href = a.getAttribute('href') || '';
-    const title = a.getAttribute('title') || el.querySelector('.tt')?.textContent?.trim() || '';
-    const img = el.querySelector('img');
-    const rawPoster = img?.getAttribute('src') || img?.getAttribute('data-lazy-src') || img?.getAttribute('data-src') || '';
-    const poster = absUrl(rawPoster);
-    const sub = el.querySelector('.sb')?.textContent?.trim() || '';
-    const status = el.querySelector('.epx')?.textContent?.trim() || '';
+  const seen = new Set();
+  const CARD_SELECTOR = [
+    '.listupd .bs',
+    '.bixbox .bs',
+    '.bsx',
+    '.listupd .utao',
+    '.animatpost',
+  ].join(', ');
 
+  container.querySelectorAll(CARD_SELECTOR).forEach(el => {
+    const a = el.querySelector('a.tip[href], h2 a[href], h3 a[href], h4 a[href], a[title][href], a[href]');
+    if (!a) return;
+
+    const href = a.getAttribute('href') || '';
+    if (!href || href === '#') return;
+    const anichinUrl = absUrl(href);
+    if (!anichinUrl || seen.has(anichinUrl)) return;
+
+    const img = el.querySelector('img');
+    const title =
+      a.getAttribute('title') ||
+      el.querySelector('.tt, .title, h2, h3, h4')?.textContent?.trim() ||
+      img?.getAttribute('alt') ||
+      '';
+    // Kartu baru kadang memakai data-original/srcset alih-alih src.
+    const rawPoster =
+      img?.getAttribute('src') ||
+      img?.getAttribute('data-lazy-src') ||
+      img?.getAttribute('data-src') ||
+      img?.getAttribute('data-original') ||
+      img?.getAttribute('srcset')?.split(',')[0]?.trim().split(/\s+/)[0] ||
+      '';
+    const poster = absUrl(rawPoster);
+    const sub = el.querySelector('.sb, .bt .sb')?.textContent?.trim() || '';
+    const status = el.querySelector('.epx, .epxs, .bt .epx, .limit')?.textContent?.trim() || '';
+
+    // Jangan merender tautan dekoratif sebagai kartu kosong bila upstream
+    // menambah elemen baru ke sebuah bixbox.
+    if (!title) return;
+    seen.add(anichinUrl);
     cards.push({
       title,
-      anichinUrl: href,
-      slug: extractSlugFromUrl(href),
+      anichinUrl,
+      slug: extractSlugFromUrl(anichinUrl),
       poster,
       sub,
       status
@@ -265,7 +299,10 @@ export default function Donghua() {
 
         // Banners slider
         const popData = [];
-        homeDoc.querySelectorAll('.swiper-slide.item').forEach(el => {
+        // Tema terbaru membungkus slide di #slidertwo tanpa class `.item`.
+        // Tetap dukung markup lama agar perpindahan tema upstream tidak
+        // mengosongkan hero beserta fallback populer.
+        homeDoc.querySelectorAll('#slidertwo .swiper-slide, .swiper-slide.item').forEach(el => {
           const backdropEl = el.querySelector('.backdrop');
           let poster = '';
           if (backdropEl) {
@@ -273,14 +310,15 @@ export default function Donghua() {
             const match = style.match(/url\(['\"]?([^'\"]+)['\"]?\)/);
             if (match) poster = absUrl(match[1]);
           }
-          const a = el.querySelector('h2 a');
+          const a = el.querySelector('.info h2 a, h2 a');
           const title = a?.textContent?.trim() || '';
           const href = a?.getAttribute('href') || '';
           if (title && href) {
+            const anichinUrl = absUrl(href);
             popData.push({
               title,
-              anichinUrl: href,
-              slug: extractSlugFromUrl(href),
+              anichinUrl,
+              slug: extractSlugFromUrl(anichinUrl),
               poster,
               status: 'Featured'
             });
