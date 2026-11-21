@@ -77,6 +77,34 @@ export const proxyCandidates = (url) => {
   return list;
 };
 
+// WordPress Anichin tidak memperlakukan /page/1/ sebagai halaman arsip
+// pertama secara konsisten. Di beberapa tema route itu mengembalikan 404 atau
+// halaman kosong, yang membuat pencarian/genre tampak seperti tidak memiliki
+// hasil. Halaman pertama selalu memakai canonical route tanpa /page/1/.
+export const buildDonghuaBrowseUrl = ({ page = 1, query = '', genre = '', category = 'list' } = {}) => {
+  const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
+  const pageSuffix = safePage > 1 ? `page/${safePage}/` : '';
+  const cleanQuery = query.trim();
+
+  if (cleanQuery) {
+    const archive = safePage > 1 ? `${API_BASE}/page/${safePage}/` : `${API_BASE}/`;
+    return `${archive}?s=${encodeURIComponent(cleanQuery)}`;
+  }
+
+  if (genre) {
+    return `${API_BASE}/genres/${encodeURIComponent(genre)}/${pageSuffix}`;
+  }
+
+  if (category === 'ongoing' || category === 'completed') {
+    return `${API_BASE}/${category}/${pageSuffix}`;
+  }
+
+  // "popular", "update", dan "rating" tidak punya archive khusus yang
+  // stabil di upstream. Gunakan daftar canonical agar filter "Semua" selalu
+  // memberi hasil, bukan route yang tidak didukung source.
+  return `${API_BASE}/${pageSuffix}`;
+};
+
 // Cek apakah respons terlihat seperti HTML asli dari anichin.moe (bukan
 // index.html SPA dari catch-all, bukan JSON error 502 dari proxy, bukan
 // halaman challenge Cloudflare / blockpage operator).
@@ -153,7 +181,12 @@ const fetchHtmlWithFallback = async (url) => {
     return html;
   } catch {
     controller.abort();
-    return best;
+    // Jangan menyamarkan outage upstream sebagai hasil pencarian kosong.
+    // Caller perlu membedakan "tidak ada judul" dari "bypass tidak menerima
+    // HTML Anichin yang valid" agar UI dapat menawarkan retry yang tepat.
+    const error = new Error('Sumber Donghua tidak mengirim HTML yang valid.');
+    error.lastHtml = best;
+    throw error;
   }
 };
 
