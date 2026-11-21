@@ -1,46 +1,40 @@
-// Proxy same-origin untuk anichin.moe (halaman Donghua).
+// Proxy same-origin untuk Anichin (halaman Donghua).
 //
-// Kenapa file ini ada:
-//  1. Frontend tidak bisa fetch anichin.moe langsung dari browser (WordPress
-//     tidak mengirim header CORS), dan *.workers.dev di-DNS-hijack sebagian
-//     operator (mis. XL Axiata -> blockpage.xlaxiata.id) sehingga fetch ke
-//     worker dari browser gagal total. Function ini membuat browser hanya
-//     bicara ke origin sendiri (/api/anichin).
-//  2. Rewrite vercel.json ("https://anichin.moe/:path*") tidak bisa
-//     mempertahankan trailing slash, padahal anichin butuh "/ongoing/"
-//     (tanpa slash = 403). Function ini menerima path mentah lewat ?path=
-//     sehingga slash utuh.
-//  3. Cloudflare anichin menantang request ber-UA non-browser. Dengan UA
-//     browser + header Sec-Fetch hasilnya 200.
+// Browser tidak dapat mengambil HTML WordPress Anichin langsung karena CORS.
+// Selain itu, source kadang memblokir IP Vercel (Cloudflare) dan proxy publik
+// bisa mengalami rate limit. Semua jalur transport dicoba SECARA PARALEL di
+// server agar browser hanya perlu menghubungi origin sendiri dan tidak menunggu
+// fallback satu per satu sampai > 1 menit.
 //
-// Perbaikan penting dibanding versi sebelumnya:
-//  - TIDAK lagi memakai `curl` lewat child_process. Binary curl tidak
-//    dijamin ada di runtime serverless Vercel; kalau tidak ada, semua jalur
-//    (termasuk fallback worker yang juga lewat curl) gagal sekaligus dan
-//    halaman kosong. Sekarang semua memakai native fetch (Node 18+).
-//  - Setiap percobaan dibatasi timeout (AbortController) dan SELURUH handler
-//    dibungkus try/catch. Versi lama memanggil fetch tanpa try/catch dan tanpa
-//    timeout: satu fetch yang throw/hang membuat function crash/timeout di
-//    Vercel (batas Hobby 10 detik) -> frontend menerima halaman error ->
-//    "Gagal Memuat Donghua". Sekarang kegagalan selalu menghasilkan JSON
-//    502 yang rapi, dan frontend bisa lanjut ke proxy publik berikutnya.
-//  - Fallback worker juga dicoba lewat native fetch (bukan curl), jadi tetap
-//    berfungsi walau curl tidak terpasang.
-//
-// Pemakaian: /api/anichin?path=/ongoing/   (tambahkan &diag=1 untuk diagnosa)
+// Pemakaian: /api/anichin?path=/ongoing/
+// Tambahkan &diag=1 untuk respons JSON ringkas saat mendiagnosis upstream.
 
 export const config = { maxDuration: 10 };
 
 const ORIGIN = 'https://anichin.moe';
-const WORKER = 'https://cf.tiyanstores.workers.dev/?url=';
 const BROWSER_UA =
   'Mozilla/5.0 (Linux; Android 13; SM-A035F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
-const DIRECT_TIMEOUT_MS = 6000;
-const WORKER_TIMEOUT_MS = 3500;
 
-const fetchWithTimeout = async (url, ua, timeoutMs) => {
+// Harus cukup pendek agar function selalu menghasilkan respons sebelum limit
+// Vercel 10 detik. Dijalankan paralel, bukan dijumlahkan.
+const UPSTREAM_TIMEOUT_MS = 6500;
+
+const proxyUrl = {
+  direct: (target) => target,
+  allorigins: (target) => `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`,
+  codetabs: (target) => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(target)}`,
+  corsproxy: (target) => `https://corsproxy.io/?url=${encodeURIComponent(target)}`,
+  worker: (target) => `https://cf.tiyanstores.workers.dev/?url=${encodeURIComponent(target)}`,
+};
+
+const TRANSPORTS = Object.keys(proxyUrl);
+
+const fetchWithTimeout = async (url, ua, timeoutMs, signal) => {
   const ctrl = new AbortController();
+  const onAbort = () => ctrl.abort();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  signal?.addEventListener('abort', onAbort, { once: true });
+
   try {
     const resp = await fetch(url, {
       redirect: 'follow',
@@ -49,6 +43,7 @@ const fetchWithTimeout = async (url, ua, timeoutMs) => {
         'User-Agent': ua,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
         'Accept-Language': 'id-ID,id;q=0.9,en;q=0.8',
+        Referer: `${ORIGIN}/`,
         'Upgrade-Insecure-Requests': '1',
         'Sec-Fetch-Dest': 'document',
         'Sec-Fetch-Mode': 'navigate',
@@ -72,24 +67,119 @@ const fetchWithTimeout = async (url, ua, timeoutMs) => {
     };
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
   }
 };
 
-const looksBlocked = (r) => {
-  if (!r || !r.body || r.body.length === 0) return true;
-  if (r.status === 0 || r.status >= 400) return true;
-  const head = r.body.subarray(0, 400).toString('utf8');
-  return /Just a moment|Access denied|Attention Required|cf-browser-verification/i.test(head);
+const looksBlocked = (result) => {
+  if (!result || !result.body || result.body.length === 0) return true;
+  if (result.status === 0 || result.status >= 400) return true;
+  const head = result.body.subarray(0, 600).toString('utf8');
+  return /just a moment|access denied|attention required|cf-browser-verification|challenge-running|captcha/i.test(head);
+};
+
+const isAssetPath = (path) => /\.(?:avif|gif|ico|jpe?g|png|svg|webp)(?:[?#]|$)/i.test(path);
+
+// Proxy publik kadang membalas halaman limit 200 OK. Untuk dokumen HTML,
+// respons harus memiliki salah satu penanda tema Anichin; image tetap boleh
+// lewat tanpa pemeriksaan markup.
+const looksUsable = (result, path) => {
+  if (looksBlocked(result)) return false;
+  if (isAssetPath(path) || !result.ctype.includes('text/html')) return true;
+  const html = result.body.toString('utf8', 0, Math.min(result.body.length, 30000)).toLowerCase();
+  return (
+    html.includes('listupd') ||
+    html.includes('bixbox') ||
+    html.includes('entry-title') ||
+    html.includes('eplister') ||
+    html.includes('swiper-slide') ||
+    /class=["'][^"']*\bbs\b/.test(html)
+  );
+};
+
+const toDiagnostic = ({ transport, result }) => ({
+  transport,
+  status: result.status,
+  bytes: result.body.length,
+  err: result.err,
+});
+
+const fetchVia = async (transport, target, path, ua, signal) => {
+  const result = await fetchWithTimeout(proxyUrl[transport](target), ua, UPSTREAM_TIMEOUT_MS, signal);
+  if (!looksUsable(result, path)) {
+    const error = new Error(`${transport} tidak memberi respons upstream yang dapat dipakai`);
+    error.result = result;
+    error.transport = transport;
+    throw error;
+  }
+  return { transport, result };
+};
+
+// Promise.any membuat respons pertama yang sehat langsung dipakai. Ini sangat
+// berbeda dari fallback serial di browser: kegagalan satu proxy tidak menahan
+// proxy lainnya. AbortController menghentikan request sisanya setelah pemenang
+// ditemukan agar function tidak terus memakai resource Vercel.
+const fetchFirstHealthy = async (target, path, ua) => {
+  const controller = new AbortController();
+  const diagnostics = [];
+  const attempts = TRANSPORTS.map((transport) =>
+    fetchVia(transport, target, path, ua, controller.signal)
+      .then((value) => {
+        diagnostics.push(toDiagnostic(value));
+        return value;
+      })
+      .catch((error) => {
+        diagnostics.push(
+          toDiagnostic({
+            transport,
+            result: error.result || {
+              status: 0,
+              body: Buffer.alloc(0),
+              err: String(error.message || error).slice(0, 200),
+            },
+          })
+        );
+        throw error;
+      })
+  );
+
+  try {
+    const picked = await Promise.any(attempts);
+    controller.abort();
+    return { picked, diagnostics };
+  } catch (error) {
+    controller.abort();
+    const failures = error?.errors || [];
+    const fallback = failures
+      .map((failure) => ({ transport: failure.transport || 'unknown', result: failure.result }))
+      .filter((entry) => entry.result)
+      .sort((a, b) => b.result.body.length - a.result.body.length)[0];
+
+    return {
+      picked: fallback || {
+        transport: 'none',
+        result: {
+          status: 0,
+          ctype: 'text/html; charset=utf-8',
+          body: Buffer.alloc(0),
+          err: 'semua transport upstream gagal',
+        },
+      },
+      diagnostics,
+    };
+  }
 };
 
 export default async function handler(req, res) {
   try {
     const url = new URL(req.url, 'https://local');
     let path = url.searchParams.get('path') || '/';
-    if (!path.startsWith('/')) path = '/' + path;
+    if (!path.startsWith('/')) path = `/${path}`;
+
+    // Target selalu dipatok ke ORIGIN; path tidak boleh menjadi URL lain.
     if (path.includes('://') || /[\r\n]/.test(path)) {
       res.statusCode = 400;
-      res.setHeader('content-type', 'application/json');
+      res.setHeader('content-type', 'application/json; charset=utf-8');
       res.setHeader('access-control-allow-origin', '*');
       return res.end(JSON.stringify({ ok: false, error: 'path tidak diizinkan' }));
     }
@@ -97,35 +187,22 @@ export default async function handler(req, res) {
     const target = ORIGIN + path;
     const clientUa = (req.headers && req.headers['user-agent']) || '';
     const ua = /Mozilla\/5\.0|Chrome\/|Safari\//i.test(clientUa) ? clientUa : BROWSER_UA;
-
-    // 1) Langsung ke anichin.moe.
-    const direct = await fetchWithTimeout(target, ua, DIRECT_TIMEOUT_MS);
-    let picked = direct;
-    let transport = 'direct';
-
-    // 2) Kalau langsung diblokir/ditantang Cloudflare, coba lewat worker
-    //    (dipanggil dari server, jadi blokir DNS operator tidak berpengaruh).
-    if (looksBlocked(picked)) {
-      const viaWorker = await fetchWithTimeout(WORKER + encodeURIComponent(target), ua, WORKER_TIMEOUT_MS);
-      if (!looksBlocked(viaWorker) || picked.body.length === 0) {
-        picked = viaWorker;
-        transport = 'worker';
-      }
-    }
+    const { picked, diagnostics } = await fetchFirstHealthy(target, path, ua);
+    const { transport, result } = picked;
 
     if (url.searchParams.get('diag') === '1') {
-      res.statusCode = 200;
+      res.statusCode = looksUsable(result, path) ? 200 : 502;
       res.setHeader('content-type', 'application/json; charset=utf-8');
       res.setHeader('cache-control', 'no-store');
       res.setHeader('access-control-allow-origin', '*');
       return res.end(
         JSON.stringify(
           {
+            ok: looksUsable(result, path),
             target,
             transport,
-            direct: { status: direct.status, bytes: direct.body.length, err: direct.err },
-            worker_used: transport === 'worker',
-            picked: { status: picked.status, bytes: picked.body.length, ctype: picked.ctype },
+            picked: toDiagnostic({ transport, result }),
+            attempts: diagnostics,
             node: process.version,
           },
           null,
@@ -134,27 +211,39 @@ export default async function handler(req, res) {
       );
     }
 
-    if (looksBlocked(picked)) {
+    if (!looksUsable(result, path)) {
       res.statusCode = 502;
       res.setHeader('content-type', 'application/json; charset=utf-8');
       res.setHeader('cache-control', 'no-store');
       res.setHeader('access-control-allow-origin', '*');
       return res.end(
-        JSON.stringify({ ok: false, target, transport, upstream_status: picked.status, err: picked.err })
+        JSON.stringify({
+          ok: false,
+          target,
+          transport,
+          upstream_status: result.status,
+          err: result.err || 'semua transport upstream gagal',
+        })
       );
     }
 
-    const isHtml = picked.ctype.includes('text/html');
-    res.statusCode = picked.status || 502;
-    res.setHeader('content-type', picked.ctype);
+    const isHtml = result.ctype.includes('text/html');
+    res.statusCode = result.status || 502;
+    res.setHeader('content-type', result.ctype);
     res.setHeader('x-proxy-via', 'vercel-anichin');
     res.setHeader('x-proxy-transport', transport);
     res.setHeader('access-control-allow-origin', '*');
-    res.setHeader('cache-control', isHtml ? 'public, max-age=60, stale-while-revalidate=300' : 'public, max-age=86400');
-    return res.end(picked.body);
+    // s-maxage mengaktifkan cache di CDN Vercel. stale-while-revalidate
+    // membuat pengunjung tetap mendapat HTML terakhir yang sukses ketika
+    // source/proxy sedang error sesaat.
+    res.setHeader(
+      'cache-control',
+      isHtml
+        ? 'public, max-age=60, s-maxage=600, stale-while-revalidate=86400'
+        : 'public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800'
+    );
+    return res.end(result.body);
   } catch (e) {
-    // Jangan pernah crash tanpa respons: frontend mengandalkan JSON error
-    // untuk lanjut ke proxy fallback berikutnya.
     try {
       res.statusCode = 502;
       res.setHeader('content-type', 'application/json; charset=utf-8');
