@@ -10,6 +10,7 @@ import {
   onImgError,
   fetchAnichinHtml,
   fetchProxyHtml,
+  buildDonghuaBrowseUrl,
 } from '../utils/anichin';
 
 const Shimmer = () => (
@@ -145,11 +146,13 @@ const parseBsxCards = (container) => {
   const cards = [];
   const seen = new Set();
   const CARD_SELECTOR = [
+    'article.bs',
     '.listupd .bs',
     '.bixbox .bs',
     '.bsx',
     '.listupd .utao',
     '.animatpost',
+    '.serieslist li',
   ].join(', ');
 
   container.querySelectorAll(CARD_SELECTOR).forEach(el => {
@@ -250,6 +253,7 @@ export default function Donghua() {
 
   // Loading states
   const [isHomeLoading, setIsHomeLoading] = useState(!memoryCache);
+  const [homeError, setHomeError] = useState('');
 
   // Browse/Filter States
   const [browseResults, setBrowseResults] = useState([]);
@@ -258,6 +262,7 @@ export default function Donghua() {
   const [selectedCategory, setSelectedCategory] = useState('list'); // 'list', 'ongoing', 'completed', 'popular', 'rating', 'update'
   const [browsePage, setBrowsePage] = useState(1);
   const [isBrowseLoading, setIsBrowseLoading] = useState(false);
+  const [browseError, setBrowseError] = useState('');
 
   // Details States
   const [detailsData, setDetailsData] = useState(null);
@@ -285,12 +290,21 @@ export default function Donghua() {
         setIsHomeLoading(true);
       }
       try {
-        // Fetch Home, Ongoing and Completed in parallel
-        const [homeHtml, ongoingHtml, completedHtml] = await Promise.all([
+        setHomeError('');
+        // Satu archive yang sedang diblokir tidak boleh mengosongkan seluruh
+        // halaman. Ambil ketiganya paralel, lalu gunakan bagian yang berhasil.
+        const primaryResponses = await Promise.allSettled([
           fetchAnichinHtml(API_BASE),
           fetchAnichinHtml(`${API_BASE}/ongoing/`),
           fetchAnichinHtml(`${API_BASE}/completed/`)
         ]);
+        const [homeHtml, ongoingHtml, completedHtml] = primaryResponses.map((result) =>
+          result.status === 'fulfilled' ? result.value : ''
+        );
+
+        if (!homeHtml && !ongoingHtml && !completedHtml) {
+          throw new Error('Bypass tidak menerima data dari sumber Donghua.');
+        }
 
         const parser = new DOMParser();
 
@@ -379,8 +393,25 @@ export default function Donghua() {
         setCompleted(compData);
         setRating(fallbackPopular); // Use fallback popular for rating as rating is similar
 
-        // Fetch Schedule & Set Day
-        const scheduleHtml = await fetchAnichinHtml(`${API_BASE}/schedule/`);
+        if (
+          popData.length === 0 &&
+          fallbackPopular.length === 0 &&
+          ongData.length === 0 &&
+          updData.length === 0 &&
+          compData.length === 0 &&
+          !memoryCache
+        ) {
+          throw new Error('Sumber merespons, tetapi tidak mengirim kartu Donghua yang dapat dibaca.');
+        }
+
+        // Schedule bersifat pelengkap. Jika endpoint ini sedang diblokir,
+        // daftar Donghua yang sudah didapat tetap harus ditampilkan.
+        let scheduleHtml = '';
+        try {
+          scheduleHtml = await fetchAnichinHtml(`${API_BASE}/schedule/`);
+        } catch (scheduleError) {
+          console.warn('Failed to load Donghua schedule', scheduleError);
+        }
         const scheduleDoc = parser.parseFromString(scheduleHtml, 'text/html');
 
         const schedData = [];
@@ -449,6 +480,7 @@ export default function Donghua() {
         setCachedData('nefusoft_donghua_home_cache_v4', compiled);
       } catch (e) {
         console.error('Failed to load Donghua Home data', e);
+        setHomeError(e?.message || 'Bypass Donghua sedang tidak dapat mengambil data.');
         // Jika fetch error total dan ada cache, gunakan cache sebagai cadangan.
         if (memoryCache) {
           setPopular(memoryCache.popular || []);
@@ -470,22 +502,17 @@ export default function Donghua() {
   // Browse and Search API Fetcher
   const fetchBrowseResults = async (page = 1) => {
     setIsBrowseLoading(true);
+    setBrowseError('');
     try {
-      let url = '';
-      if (searchQuery.trim()) {
-        url = `${API_BASE}/page/${page}/?s=${encodeURIComponent(searchQuery)}`;
-      } else if (selectedGenre) {
-        const slug = genres.find(g => g.name.toLowerCase() === selectedGenre.toLowerCase())?.slug || selectedGenre.toLowerCase().replace(/\s+/g, '-');
-        url = `${API_BASE}/genres/${slug}/page/${page}/`;
-      } else {
-        if (selectedCategory === 'ongoing') {
-          url = `${API_BASE}/ongoing/page/${page}/`;
-        } else if (selectedCategory === 'completed') {
-          url = `${API_BASE}/completed/page/${page}/`;
-        } else {
-          url = `${API_BASE}/page/${page}/`;
-        }
-      }
+      const genreSlug = selectedGenre
+        ? genres.find(g => g.name.toLowerCase() === selectedGenre.toLowerCase())?.slug || selectedGenre.toLowerCase().replace(/\s+/g, '-')
+        : '';
+      const url = buildDonghuaBrowseUrl({
+        page,
+        query: searchQuery,
+        genre: genreSlug,
+        category: selectedCategory,
+      });
 
       const resHtml = await fetchAnichinHtml(url);
       const parser = new DOMParser();
@@ -497,6 +524,7 @@ export default function Donghua() {
     } catch (e) {
       console.error('Failed to fetch browse/search results', e);
       setBrowseResults([]);
+      setBrowseError(e?.message || 'Bypass Donghua sedang tidak dapat mengambil hasil.');
     } finally {
       setIsBrowseLoading(false);
     }
@@ -877,7 +905,7 @@ export default function Donghua() {
                   <div className="text-center">
                     <h3 className="text-white font-black text-sm tracking-wide">Gagal Memuat Donghua</h3>
                     <p className="text-white/50 text-[11px] font-bold mt-1 leading-relaxed">
-                      Terjadi gangguan koneksi, limit server, atau data gagal diambil dari Portal API. Silakan coba lagi.
+                      {homeError || 'Bypass sedang mencoba ulang sumber Donghua. Silakan coba lagi beberapa saat lagi.'}
                     </p>
                   </div>
                   <button
@@ -1137,6 +1165,20 @@ export default function Donghua() {
                       </h3>
                     </div>
                   ))}
+                </div>
+              ) : browseError ? (
+                <div className="text-center py-16 px-6 bg-red-500/5 border border-red-500/15 rounded-3xl flex flex-col items-center gap-4">
+                  <span className="text-2xl" aria-hidden="true">⚠️</span>
+                  <div>
+                    <p className="text-white font-black text-sm">Hasil Donghua belum dapat dimuat</p>
+                    <p className="text-white/45 text-xs font-bold mt-1 max-w-md">{browseError}</p>
+                  </div>
+                  <button
+                    onClick={() => fetchBrowseResults(browsePage)}
+                    className="bg-[#F6CF80] hover:bg-[#ebd59b] text-black px-5 py-2.5 rounded-xl text-xs font-black transition-colors cursor-pointer"
+                  >
+                    🔄 Coba Lagi
+                  </button>
                 </div>
               ) : (
                 <div className="text-center py-20 text-white/30 text-xs font-bold bg-[#16161a]/20 border border-white/5 rounded-3xl">
