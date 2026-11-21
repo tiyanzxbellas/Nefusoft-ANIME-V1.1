@@ -580,8 +580,12 @@ export default function Donghua() {
             : `Sumber live sedang tidak tersedia. Menampilkan katalog cache dari ${donghuaSnapshot.updatedAt || 'sinkronisasi terakhir'}.`
         );
       } else {
+        // Query yang tidak ada dalam snapshot tetap merupakan hasil kosong,
+        // bukan error aplikasi. Jelaskan keterbatasan cache tanpa mengulang
+        // pesan teknis "HTML tidak valid" ke pengguna.
         setBrowseResults([]);
-        setBrowseError(e?.message || 'Bypass Donghua sedang tidak dapat mengambil hasil.');
+        setBrowsePage(1);
+        setBrowseNotice('Sumber live sedang tidak tersedia dan judul ini belum ada di katalog cache. Coba kata kunci lain atau ulangi saat source pulih.');
       }
     } finally {
       setIsBrowseLoading(false);
